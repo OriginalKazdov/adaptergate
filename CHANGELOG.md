@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-18
+
+### The Slack-converter
+
+When the gate rejects with a driver slice, adaptergate now emits a
+**Pattern** line summarising what the failing queries have in common:
+
+    Pattern: all 10 failing queries contain: "order_id", "refund"
+
+Pure N-gram frequency analysis with stopword filtering and token-overlap
+deduplication. No LLM, no extra dependencies. The line a customer's PM
+screenshots into Slack at 2am to start triage.
+
+### Added
+
+- `adaptergate.gating.cluster.find_pattern()` — public API for N-gram
+  failure pattern detection. Takes a list of query dicts, returns either
+  a one-line description or ``None`` (no clear pattern).
+- `SliceAttribution.pattern: str | None` — computed automatically by the
+  gate for each slice that has regressed queries.
+- CLI renders the pattern under the driver slice when present.
+
+### Hardening (from 3-agent code review of v0.2)
+
+- **`_pick_query_id()`** helper replaces the previous `or`-chain that fell
+  through on falsy IDs like ``"0"`` or ``""``. Now uses ``is not None``
+  semantics.
+- **`schema_version: int = 2`** on `GateDecision` so audit-log consumers can
+  detect older records.
+- **`malformed_slice_queries: int`** counter on `GateDecision` plus a
+  stderr warning when held-out queries have a non-list ``slices`` field —
+  no more silent drops misread as "feature broken."
+- **CLI multi-slice clarification**: "25 unique queries regressed" + note
+  explaining slice counts may sum higher when queries belong to multiple
+  slices (previously confusing).
+- **Ghost docstring removed**: regression_gate.py no longer references a
+  "council" consumer that doesn't exist in the repo.
+
+### Tests
+
+12 new tests (9 cluster, 3 robustness). Total 69 passing. Ruff clean.
+
+### Docs
+
+- README rewrite: slice + pattern output above the fold; killed stale
+  "v0.1 — early" status; added explicit **Scope** section listing
+  what's *not* in v0.3 (LLM cause hypothesis, counterfactual data,
+  recipe library); v0.4 roadmap surfaces the recipe-library moat plan.
+
+---
+
 ## [0.2.1] — 2026-05-18
 
 ### Hardening

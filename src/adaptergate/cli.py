@@ -167,6 +167,8 @@ def gate(
                 f"   {driver.score_baseline:.3f} → {driver.score_candidate:.3f}"
                 f"  (Δ={driver.delta:+.3f}, {driver.n_regressed}/{driver.n_total} regressed)"
             )
+            if driver.pattern:
+                console.print(f"  [bold]Pattern:[/bold] {driver.pattern}")
             named_ids = [qid for qid in driver.regressed_query_ids if qid]
             if named_ids:
                 preview = ", ".join(named_ids[:5])
@@ -188,9 +190,23 @@ def gate(
                 )
 
         if decision.regressions:
-            console.print(f"\n[yellow]{len(decision.regressions)} queries regressed total[/yellow]")
+            note = ""
+            if decision.slice_attributions and len(decision.slice_attributions) > 1:
+                note = " (slice n_regressed values may sum higher when queries belong to multiple slices)"
+            console.print(
+                f"\n[yellow]{len(decision.regressions)} unique queries regressed[/yellow]"
+                f"{note}"
+            )
         if decision.improvements:
-            console.print(f"[green]{len(decision.improvements)} queries improved total[/green]")
+            console.print(f"[green]{len(decision.improvements)} unique queries improved[/green]")
+
+        if decision.malformed_slice_queries > 0:
+            err_console.print(
+                f"\n[yellow]Warning:[/yellow] {decision.malformed_slice_queries}"
+                f" held-out queries had a malformed 'slices' field"
+                f" (expected list, got non-list). Those queries contributed to"
+                f" aggregate scoring but were skipped for slice attribution."
+            )
 
     raise typer.Exit(0 if decision.accepted else 1)
 

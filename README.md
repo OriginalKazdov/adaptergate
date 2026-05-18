@@ -9,9 +9,10 @@ adapters go to a replay buffer for later analysis. CI-friendly exit codes.
 Serving-stack agnostic: you supply a scorer callable, we supply the gate.
 
 When your held-out queries carry slice tags (intent, language, difficulty,
-whatever), the gate also tells you **which behavioral slice broke** — not
-just that *something* did. This is the seam between training-data lineage
-and per-tenant eval outcomes; it is where causal root-cause lives.
+whatever) and natural-language text, adaptergate doesn't just say "score
+dropped." It tells you **which behavioral slice broke**, **shows you the
+failing query IDs**, and **describes what the failing queries have in
+common** — the line your on-call PM screenshots into Slack at 2am.
 
 ```
 $ adaptergate gate \
@@ -24,23 +25,28 @@ $ adaptergate gate \
 Tenant:    acme
 Candidate: adapter_v19
 Baseline:  adapter_v18
-Score:     0.901 → 0.311  (Δ=-0.591, ε=0.02)
+Score:     0.924 → 0.353  (Δ=-0.571, ε=0.02)
 Held-out:  n=25
-Reason:    REJECTED: aggregate 0.901 → 0.311 (Δ=-0.591) over n=25.
+Reason:    REJECTED: aggregate 0.924 → 0.353 (Δ=-0.571) over n=25.
            Drop exceeds ε=0.02.
 
-DRIVER SLICE: intent=billing_dispute   0.932 → 0.073  (Δ=-0.859, 10/10 regressed)
+DRIVER SLICE: intent=billing_dispute   0.946 → 0.113  (Δ=-0.834, 10/10 regressed)
+  Pattern: all 10 failing queries contain: "order_id", "refund"
   Failing query IDs: billing_1, billing_2, billing_3, billing_4, billing_5 + 5 more
 
 Slice breakdown (most-regressed first):
-  -0.859   10/10 regressed   intent=billing_dispute
-  -0.487    7/7  regressed   intent=technical_support
-  -0.346    8/8  regressed   intent=order_status
+  -0.834   10/10 regressed   intent=billing_dispute
+  -0.396   15/15 regressed   intent=order_status
 
-25 queries regressed total
+25 unique queries regressed (slice n_regressed values may sum higher when
+queries belong to multiple slices)
 $ echo $?
 1
 ```
+
+That `Pattern: ...` line is N-gram frequency analysis — no LLM, no extra
+dependencies, no cloud calls. Just the common words across failing queries.
+Slack-paste-friendly by design.
 
 ---
 
@@ -215,20 +221,32 @@ for q in decision.regressions:
 
 ---
 
-## What's in the box (v0.1)
+## What's in the box (v0.3)
 
 ```
 adaptergate/
 ├── gating/
-│   ├── regression_gate.py   # RegressionGate + GateConfig + GateDecision
+│   ├── regression_gate.py   # RegressionGate + GateConfig + GateDecision + SliceAttribution
 │   ├── holdout_eval.py      # HoldoutSet — per-tenant queries, JSONL-backed
-│   └── replay_buffer.py     # ReplayBuffer — rejected updates with full decision
+│   ├── replay_buffer.py     # ReplayBuffer — rejected updates with full decision
+│   └── cluster.py           # find_pattern() — N-gram failure pattern detection
 ├── cli.py                   # `adaptergate` entry point
 └── examples/
     └── mock_scorer.py       # deterministic mock for trying things out
 ```
 
-Tests: 29 unit tests, run with `pytest`.
+Tests: 69 unit tests across the gating subsystem, cluster, robustness, and
+BIRD-SQL eval primitives. Run with `pytest`. Ruff-clean.
+
+### Scope
+
+**In:** per-tenant gate, slice-level attribution, driver slice, failing
+query IDs, N-gram pattern of failing queries, replay buffer, audit log,
+CI exit codes.
+
+**NOT in (yet):** LLM-generated cause hypothesis, automatic counterfactual
+training data, recipe library for repairs, multi-base-model orchestration,
+hosted dashboard. See **Roadmap** below — these are deliberate omissions.
 
 ### Built on (cited, not invented)
 
@@ -241,32 +259,40 @@ for full attribution.
 - **N-LoRA / O-LoRA** — arXiv 2408.06133, arXiv 2310.14152 — orthogonal subspaces
 
 Our contribution: independent production implementations + the per-tenant
-gating layer + audit log + replay buffer + CLI.
+gating layer + slice-level attribution + N-gram failure-pattern detection +
+audit log + replay buffer + CLI.
 
 ---
 
 ## Roadmap
 
-v0.1 (this release):
-- ✅ Regression gate
-- ✅ Per-tenant held-out set
-- ✅ Replay buffer for rejected updates
-- ✅ CLI with audit log
-- ✅ Mock scorer example
+**v0.1** — basic regression gate (✅ shipped)
+**v0.2** — slice-level attribution + driver slice + failing IDs (✅ shipped)
+**v0.3** — N-gram failure pattern + robustness fixes + better positioning (✅ this release)
 
-Coming:
-- vLLM integration example (multi-LoRA serving + gate together)
-- BIRD-SQL example end-to-end (with the +26.6pp reference data)
-- Webhooks for CI/CD integration
-- ProCL slot rebalancer (for the "what now?" question after rejection)
-- DriftCouncil — the agent-driven detection + repair brain that goes
-  upstream of the gate
+**v0.4 (next, the real moat)**:
+- **Recipe library**: ArXiv CL papers from a daily-scoring pipeline distilled
+  into typed repair recipes (rank-rebalance, replay-buffer-pruning, LoRA-merge
+  weight tune, ProCL slot proposal, …)
+- **`observed_efficacy`** column: per-customer recipe applications logged,
+  with measured before/after. Each customer's recipe usage strengthens the
+  recommender for the next customer.
+- Public API: `adaptergate.recommend(gate_decision)` → top-k recipes ranked
+  by efficacy for matching slice signatures.
+
+This is where the moat compounds: every customer's rejection becomes a row
+in a corpus competitors cannot reproduce by force of capital.
+
+**Later**: GitHub PR comment action, vLLM integration example, hosted
+dashboard, ProCL slot surgery, integrated-gradients causal layer attribution.
 
 ---
 
 ## Status
 
-**v0.1 — early. Use at your own risk.** API may change before v1.0.
+**v0.3 — early but production-tested.** 69 tests, ruff clean, wheel built
+clean. API may change before v1.0; the gate decision schema carries a
+`schema_version` field so audit-log consumers can handle older records.
 Issues and PRs welcome.
 
 ---

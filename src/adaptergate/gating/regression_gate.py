@@ -12,8 +12,9 @@ Inspiration:
   - Online-LoRA (arxiv 2411.05663) distribution-shift detection
   - Silent Collapse MTR (arxiv 2605.14588) drift signals
   - Our contribution: per-tenant scoping, deterministic version history,
-    rich GateDecision with per-query and per-slice attribution for the
-    council to reason on.
+    rich GateDecision with per-query and per-slice attribution that
+    downstream tooling (your retrain pipeline, your dashboards, your
+    CI bots) can consume directly.
 """
 
 from __future__ import annotations
@@ -88,6 +89,19 @@ class SliceAttribution:
     """The specific queries that regressed — for showing the customer the
     actual failing examples."""
 
+    pattern: str | None = None
+    """One-line description of what the failing queries have in common, or
+    ``None`` if no clear pattern. Powered by N-gram frequency analysis on
+    the queries' natural-language text fields (``question``, ``text``,
+    ``prompt``, ``query``). See ``adaptergate.gating.cluster.find_pattern``.
+    """
+
+
+SCHEMA_VERSION = 2
+"""Bumped whenever GateDecision's serialized shape changes. Downstream
+consumers that read audit logs should check this field to handle older
+records."""
+
 
 @dataclass
 class GateDecision:
@@ -106,11 +120,17 @@ class GateDecision:
     reason: str
     timestamp: str
     per_query: list[dict[str, Any]] = field(default_factory=list)
-    """Per-query baseline + candidate scores + delta. Downstream consumers
-    (e.g. DriftCouncil) reason over this list."""
+    """Per-query baseline + candidate scores + delta."""
     slice_attributions: list[SliceAttribution] = field(default_factory=list)
     """Per-slice breakdown, sorted with the most-regressed slice first.
     Only populated when held-out queries carry a ``"slices"`` field."""
+    malformed_slice_queries: int = 0
+    """Count of held-out queries whose ``slices`` field was present but not
+    a list (e.g. a bare string typo like ``"intent=foo"``). Those queries
+    contribute to aggregate scoring but are skipped for slice attribution."""
+    schema_version: int = SCHEMA_VERSION
+    """Schema version of this decision blob — read by downstream consumers
+    to handle older audit-log records gracefully."""
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), indent=indent, default=str)
@@ -127,10 +147,11 @@ class GateDecision:
 
     @property
     def driver_slice(self) -> SliceAttribution | None:
-        """The slice with the largest score drop, if any.
+        """The slice with the most-negative delta, or ``None`` if no slice
+        regressed (or no slices were declared on the held-out set).
 
-        Returns ``None`` if no slices were declared on the held-out set, or
-        if no slice regressed.
+        ``slice_attributions`` is sorted most-regressed-first, so the driver
+        is simply the first entry — provided its delta is negative.
         """
         if not self.slice_attributions:
             return None
@@ -232,7 +253,8 @@ class RegressionGate:
         baseline_total = 0.0
         candidate_total = 0.0
         any_regressed_clean = False
-        slice_buckets: dict[str, list[dict[str, Any]]] = {}
+        slice_buckets: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+        malformed_slice_queries = 0
 
         for q in queries:
             score_baseline = scorer(baseline_id, q) if baseline_id else 0.0
@@ -241,14 +263,17 @@ class RegressionGate:
             baseline_total += score_baseline
             candidate_total += score_candidate
             row = {
-                "query_id": q.get("question_id") or q.get("id") or q.get("query_id"),
+                "query_id": _pick_query_id(q),
                 "score_baseline": score_baseline,
                 "score_candidate": score_candidate,
                 "delta": delta,
             }
             per_query.append(row)
-            for slice_tag in _normalize_slices(q.get("slices")):
-                slice_buckets.setdefault(slice_tag, []).append(row)
+            raw_slices = q.get("slices")
+            if raw_slices is not None and not isinstance(raw_slices, list):
+                malformed_slice_queries += 1
+            for slice_tag in _normalize_slices(raw_slices):
+                slice_buckets.setdefault(slice_tag, []).append((q, row))
             if self.config.strict_per_query and score_baseline == 1.0 and score_candidate < 1.0:
                 any_regressed_clean = True
 
@@ -286,34 +311,42 @@ class RegressionGate:
             timestamp=now,
             per_query=per_query,
             slice_attributions=slice_attributions,
+            malformed_slice_queries=malformed_slice_queries,
         )
 
     @staticmethod
     def _attribute_slices(
-        slice_buckets: dict[str, list[dict[str, Any]]],
+        slice_buckets: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]],
     ) -> list[SliceAttribution]:
         """Aggregate per-query results into per-slice attributions.
 
         Output is sorted most-regressed-first so ``slice_attributions[0]``
-        is the driver slice (the one your customer will notice first).
+        is the driver slice. Each attribution carries a ``pattern`` string
+        (or ``None``) describing what the failing queries have in common —
+        the customer's Slack-screenshot line.
         """
+        from adaptergate.gating.cluster import find_pattern
+
         attributions: list[SliceAttribution] = []
-        for slice_tag, rows in slice_buckets.items():
-            n_total = len(rows)
+        for slice_tag, items in slice_buckets.items():
+            n_total = len(items)
             if n_total == 0:
                 continue
+            rows = [row for _q, row in items]
             score_baseline = sum(r["score_baseline"] for r in rows) / n_total
             score_candidate = sum(r["score_candidate"] for r in rows) / n_total
-            regressed = [r for r in rows if r["delta"] < 0]
+            regressed_items = [(q, r) for q, r in items if r["delta"] < 0]
+            regressed_queries = [q for q, _r in regressed_items]
             attributions.append(
                 SliceAttribution(
                     slice_tag=slice_tag,
                     n_total=n_total,
-                    n_regressed=len(regressed),
+                    n_regressed=len(regressed_items),
                     score_baseline=score_baseline,
                     score_candidate=score_candidate,
                     delta=score_candidate - score_baseline,
-                    regressed_query_ids=[r["query_id"] for r in regressed],
+                    regressed_query_ids=[r["query_id"] for _q, r in regressed_items],
+                    pattern=find_pattern(regressed_queries) if regressed_queries else None,
                 )
             )
         attributions.sort(key=lambda s: s.delta)
@@ -378,3 +411,16 @@ def _normalize_slices(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [s for s in raw if isinstance(s, str)]
+
+
+def _pick_query_id(q: dict[str, Any]) -> Any:
+    """Return the customer-supplied query id, preferring question_id > id > query_id.
+
+    Uses ``is not None`` rather than truthiness so legitimate falsy IDs
+    (``0``, empty string) are preserved instead of falling through to the
+    next key in the chain.
+    """
+    for key in ("question_id", "id", "query_id"):
+        if key in q and q[key] is not None:
+            return q[key]
+    return None
