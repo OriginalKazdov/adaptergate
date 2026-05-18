@@ -1,0 +1,53 @@
+adaptergate
+Copyright (c) 2026
+Licensed under the Apache License, Version 2.0.
+
+This product builds upon the following research and software. All upstream
+work is credited to its authors; this project's contribution is its
+original implementation, integration, and the regression-gating system.
+
+============================================================================
+PAPERS (algorithmic foundations)
+============================================================================
+
+ProCL — arXiv 2605.13162
+  "Continual Fine-Tuning of LLMs via Program Memory"
+  Used in: src/adaptergate/core/procl.py
+  Our contribution: independent re-implementation from the paper, bug fixes
+  (composition cross-terms, dtype handling, autograd reset), production
+  integration. The algorithm is credited to the paper authors.
+
+Silent Collapse — arXiv 2605.14588
+  "Silent Collapse in Recursive Learning Systems"
+  Used in: src/adaptergate/observability/silent_collapse.py
+  Our contribution: independent re-implementation of the MTR framework.
+  The drift signature (H_g/H_0 < 0.5 with PPL_g/PPL_0 ≈ 1) is credited
+  to the paper authors.
+
+Online-LoRA — arXiv 2411.05663
+  "Online-LoRA: Task-free Online Continual Learning via LoRA"
+  Concepts of online distribution-shift detection informed our
+  regression-gating design.
+
+PreFT — arXiv 2605.14217
+  "Prefill-only Finetuning for Efficient Inference"
+  Referenced as a future integration once code is publicly released
+  by the authors. Not currently integrated.
+
+N-LoRA / O-LoRA — arXiv 2408.06133, arXiv 2310.14152
+  Orthogonal LoRA subspace work, referenced in the regression-gating
+  literature review.
+
+============================================================================
+SOFTWARE
+============================================================================
+
+vLLM — https://github.com/vllm-project/vllm — Apache License 2.0
+  Used as serving backbone via its public Python API.
+  No source modifications are distributed in this repository.
+
+bitsandbytes — Apache License 2.0
+  Used for 4-bit quantization.
+
+transformers, peft, accelerate (HuggingFace) — Apache License 2.0
+torch — BSD-3-Clause

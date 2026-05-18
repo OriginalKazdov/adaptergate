@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.DS_Store
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Models + weights
+models/
+checkpoints/
+adapters/
+*.safetensors
+*.bin
+*.pt
+
+# Experiments output
+experiments/runs/
+*.log
+wandb/
+
+# Data
+data/*/
+!data/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Internal docs (not for public repo)
+CONTEXT.md
