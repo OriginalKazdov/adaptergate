@@ -24,11 +24,14 @@ from rich.console import Console
 from adaptergate import __version__
 from adaptergate.gating import (
     GateConfig,
+    GateDecision,
     HoldoutSet,
     RegressionGate,
     ReplayBuffer,
+    SliceAttribution,
     append_audit,
 )
+from adaptergate.recipes import RecipeStore, recommend
 
 app = typer.Typer(
     help="adaptergate — CI gate for per-tenant LoRA adapters that update online.",
@@ -45,8 +48,14 @@ replay_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+recipes_app = typer.Typer(
+    help="Manage the recipe library (paper-derived CL interventions).",
+    no_args_is_help=True,
+    add_completion=False,
+)
 app.add_typer(holdout_app, name="holdout")
 app.add_typer(replay_app, name="replay")
+app.add_typer(recipes_app, name="recipes")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -402,6 +411,165 @@ def replay_list(
 def version():
     """Print adaptergate version."""
     typer.echo(__version__)
+
+
+# ---------- recipes subcommands ----------
+
+def _bundled_seed_path() -> Path:
+    """Locate the package-bundled seed_recipes.jsonl."""
+    import adaptergate as _pkg
+
+    return Path(_pkg.__file__).parent / "data" / "seed_recipes.jsonl"
+
+
+@recipes_app.command("list")
+def recipes_list(
+    recipes_path: Path = typer.Option(..., "--recipes", help="Path to recipes JSONL."),
+):
+    """List recipes in the library."""
+    store = RecipeStore(recipes_path=recipes_path, applications_path=recipes_path.with_name("applications.jsonl"))
+    if len(store) == 0:
+        err_console.print(
+            f"[yellow]No recipes in {recipes_path}.[/yellow]"
+            f" Run [bold]adaptergate recipes seed --recipes {recipes_path}[/bold]"
+            f" to populate from the bundled seed library."
+        )
+        raise typer.Exit(1)
+    for r in store.list_recipes():
+        typer.echo(
+            json.dumps(
+                {
+                    "recipe_id": r.recipe_id,
+                    "name": r.name,
+                    "intervention_type": r.intervention_type,
+                    "source_paper": r.source_paper_arxiv,
+                }
+            )
+        )
+
+
+@recipes_app.command("show")
+def recipes_show(
+    recipe_id: str = typer.Argument(..., help="ID of the recipe to display."),
+    recipes_path: Path = typer.Option(..., "--recipes"),
+):
+    """Show full detail for one recipe."""
+    store = RecipeStore(recipes_path=recipes_path, applications_path=recipes_path.with_name("applications.jsonl"))
+    r = store.get_recipe(recipe_id)
+    if r is None:
+        err_console.print(f"[red]No recipe with id {recipe_id!r} in {recipes_path}.[/red]")
+        raise typer.Exit(1)
+    typer.echo(r.to_json())
+
+
+@recipes_app.command("seed")
+def recipes_seed(
+    recipes_path: Path = typer.Option(..., "--recipes", help="Where to write the seed recipes."),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Overwrite any existing recipes file at this path."
+    ),
+):
+    """Populate a recipes file from the package-bundled seed library."""
+    seed = _bundled_seed_path()
+    if not seed.exists():
+        err_console.print(f"[red]Seed file not found at {seed}.[/red]")
+        raise typer.Exit(2)
+    if recipes_path.exists() and not overwrite:
+        err_console.print(
+            f"[red]{recipes_path} already exists. Pass --overwrite to replace.[/red]"
+        )
+        raise typer.Exit(1)
+    recipes_path.parent.mkdir(parents=True, exist_ok=True)
+    recipes_path.write_text(seed.read_text())
+    n = sum(1 for line in recipes_path.read_text().splitlines() if line.strip())
+    typer.echo(json.dumps({"seeded": str(recipes_path), "n_recipes": n}))
+
+
+@app.command()
+def recommend_cmd(
+    decision_path: Path = typer.Option(
+        ..., "--decision", help="Path to a GateDecision JSON or JSONL audit log."
+    ),
+    recipes_path: Path = typer.Option(..., "--recipes", help="Path to recipes JSONL."),
+    line: int = typer.Option(
+        -1, "--line", help="Which line of the audit log to consume (default: last)."
+    ),
+    top_k: int = typer.Option(5, "--top-k", help="Maximum recommendations to return."),
+    output_format: str = typer.Option(
+        "human", "--format", "-f", help="Output format: human (default) or json."
+    ),
+):
+    """Recommend repair recipes for a rejected gate decision."""
+    decision = _load_decision(decision_path, line=line)
+    store = RecipeStore(
+        recipes_path=recipes_path,
+        applications_path=recipes_path.with_name("applications.jsonl"),
+    )
+    recs = recommend(decision, store, top_k=top_k)
+
+    if output_format == "json":
+        typer.echo(json.dumps([r.to_dict() for r in recs], indent=2))
+        return
+
+    if not recs:
+        if decision.accepted:
+            console.print("[green]Decision was ACCEPTED — no repair recipe needed.[/green]")
+        elif decision.driver_slice is None:
+            console.print(
+                "[yellow]No driver slice on this decision — add slice tags to your"
+                " held-out queries to enable recipe matching.[/yellow]"
+            )
+        else:
+            console.print(
+                f"[yellow]No recipes in the library match driver slice"
+                f" `{decision.driver_slice.slice_tag}`.[/yellow]"
+            )
+        return
+
+    driver = decision.driver_slice
+    if driver is not None:
+        console.rule(f"[bold magenta]Recipes for driver slice: {driver.slice_tag}[/bold magenta]")
+    for i, r in enumerate(recs, 1):
+        eff = (
+            f"avg Δ={r.expected_efficacy:+.3f} over n={r.n_uses}"
+            if r.expected_efficacy is not None
+            else "no prior applications"
+        )
+        console.print(
+            f"\n[bold cyan]{i}. {r.recipe.name}[/bold cyan]"
+            f"   [{eff}]"
+        )
+        console.print(f"   id: [magenta]{r.recipe.recipe_id}[/magenta]")
+        console.print(f"   intervention: {r.recipe.intervention_type}")
+        if r.recipe.source_paper_arxiv:
+            console.print(f"   source: arXiv {r.recipe.source_paper_arxiv}")
+        console.print(f"   {r.recipe.description}")
+
+
+def _load_decision(path: Path, *, line: int) -> GateDecision:
+    """Load a GateDecision from a JSON or JSONL file at ``path``.
+
+    Robust to both single-JSON files (older audit logs) and JSONL (current).
+    For JSONL, ``line`` selects which entry (default ``-1`` = last).
+    """
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        raise typer.BadParameter(f"{path} is empty.")
+    if "\n" in raw:
+        lines = [s for s in raw.splitlines() if s.strip()]
+        idx = line if line >= 0 else len(lines) + line
+        if not (0 <= idx < len(lines)):
+            raise typer.BadParameter(f"line index {line} out of range (file has {len(lines)} lines)")
+        blob = lines[idx]
+    else:
+        blob = raw
+    data = json.loads(blob)
+    # Reconstruct SliceAttribution and GateDecision from the dict.
+    slice_attrs = [
+        SliceAttribution(**s) for s in data.get("slice_attributions", [])
+    ]
+    data["slice_attributions"] = slice_attrs
+    return GateDecision(**data)
 
 
 def main():

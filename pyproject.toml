@@ -1,6 +1,6 @@
 [project]
 name = "adaptergate"
-version = "0.4.0"
+version = "0.5.0"
 description = "CI gate for per-tenant LoRA adapters that update online. Slice-level reject explain. Serving-stack agnostic."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -55,6 +55,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+adaptergate = ["data/*.jsonl"]
 
 [tool.ruff]
 line-length = 100

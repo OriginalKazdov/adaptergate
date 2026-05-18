@@ -221,6 +221,55 @@ for q in decision.regressions:
 
 ---
 
+## Recipe library — the answer to "what now?"
+
+When the gate rejects with a driver slice, adaptergate can recommend
+paper-derived intervention recipes ranked by **empirical efficacy across
+prior applications**. Generic eval frameworks tell you *what* failed;
+adaptergate v0.5+ tells you *what to do*, citing the paper each recipe
+came from.
+
+```bash
+# Seed your recipe library from the bundled 7-recipe starter
+adaptergate recipes seed --recipes data/recipes.jsonl
+
+# After a gate rejects (audit log captures the decision)
+adaptergate recommend-cmd \
+    --decision data/audit.jsonl \
+    --recipes data/recipes.jsonl \
+    --top-k 3
+```
+
+```
+Recipes for driver slice: intent=billing_dispute
+
+1. ProCL slot rebalance for the driver slice   [no prior applications]
+   id: procl_slot_rebalance_v1
+   intervention: slot_rebalance
+   source: arXiv 2605.13162
+   Allocate a new ProCL program slot dedicated to the driver-slice queries...
+
+2. Online-LoRA learning rate decay              [no prior applications]
+   id: online_lora_lr_decay_v1
+   source: arXiv 2411.05663
+   Reduce the LoRA learning rate and re-run training...
+```
+
+The compounding mechanic: every customer who applies a recipe and logs the
+outcome via ``RecipeStore.add_application()`` strengthens the recommender
+for the next customer. Recipes with positive empirical efficacy outrank
+fresh entries; over time the ranking reflects what *actually* fixes
+regressions in the wild — a corpus competitors cannot replicate by force
+of capital.
+
+Seven seed recipes ship with the package: ProCL slot rebalance,
+Online-LoRA LR decay, N-LoRA orthogonalization, replay buffer prune, LoRA
+rank reduction, Silent Collapse trust-throttle, StableEdit localized patch.
+See ``adaptergate.data.seed_recipes`` (loaded via the ``recipes seed``
+CLI command).
+
+---
+
 ## CI integration & output formats
 
 ```bash
@@ -254,22 +303,28 @@ The CLI surfaces three kinds of warnings on stderr (so they survive
 
 ---
 
-## What's in the box (v0.4)
+## What's in the box (v0.5)
 
 ```
 adaptergate/
 ├── gating/
 │   ├── regression_gate.py   # RegressionGate + GateConfig + GateDecision + SliceAttribution
-│   ├── holdout_eval.py      # HoldoutSet — per-tenant queries, JSONL-backed
+│   ├── holdout_eval.py      # HoldoutSet — per-tenant queries, JSONL-backed, staleness check
 │   ├── replay_buffer.py     # ReplayBuffer — rejected updates with full decision
 │   └── cluster.py           # find_pattern() — N-gram failure pattern detection
+├── recipes/
+│   ├── models.py            # Recipe + RecipeApplication + RecipeRecommendation
+│   ├── store.py             # RecipeStore — JSONL-backed library + application log
+│   └── recommend.py         # recommend(decision, store) — efficacy-ranked picks
+├── data/
+│   └── seed_recipes.jsonl   # 7 seed recipes derived from May-2026 CL literature
 ├── cli.py                   # `adaptergate` entry point
 └── examples/
     └── mock_scorer.py       # deterministic mock for trying things out
 ```
 
-Tests: 69 unit tests across the gating subsystem, cluster, robustness, and
-BIRD-SQL eval primitives. Run with `pytest`. Ruff-clean.
+Tests: 92 unit tests across the gating subsystem, cluster, robustness,
+recipes, and BIRD-SQL eval primitives. Run with `pytest`. Ruff-clean.
 
 ### Scope
 
@@ -301,29 +356,27 @@ audit log + replay buffer + CLI.
 
 **v0.1** — basic regression gate (✅ shipped)
 **v0.2** — slice-level attribution + driver slice + failing IDs (✅ shipped)
-**v0.3** — N-gram failure pattern + robustness fixes + better positioning (✅ this release)
+**v0.3** — N-gram failure pattern + robustness fixes (✅ shipped)
+**v0.4** — `--format json/pr-comment`, `--show-failures N`, duplicate-slice
+detection, holdout staleness check (✅ shipped)
+**v0.5** — **recipe library** + `observed_efficacy` + `recommend()` API +
+7 seeded paper-derived recipes (✅ this release — the moat substrate)
 
-**v0.4 (next, the real moat)**:
-- **Recipe library**: ArXiv CL papers from a daily-scoring pipeline distilled
-  into typed repair recipes (rank-rebalance, replay-buffer-pruning, LoRA-merge
-  weight tune, ProCL slot proposal, …)
-- **`observed_efficacy`** column: per-customer recipe applications logged,
-  with measured before/after. Each customer's recipe usage strengthens the
-  recommender for the next customer.
-- Public API: `adaptergate.recommend(gate_decision)` → top-k recipes ranked
-  by efficacy for matching slice signatures.
-
-This is where the moat compounds: every customer's rejection becomes a row
-in a corpus competitors cannot reproduce by force of capital.
-
-**Later**: GitHub PR comment action, vLLM integration example, hosted
-dashboard, ProCL slot surgery, integrated-gradients causal layer attribution.
+**v0.5.x / v0.6**:
+- Automated radar.db → recipe ingestion (LLM-extracted typed recipes from
+  newly-published CL papers, with manual review queue)
+- Cross-tenant pattern matching ("this regression style failed at N other
+  tenants") — emerges naturally as the application corpus grows
+- Diff view (`adaptergate review --query X`) — needs scorer-contract change
+- Baseline drift handling — gate currently assumes baseline is ground
+  truth, wrong for online-updating adapters
+- GitHub PR comment action (wrap `--format pr-comment` in a reusable action)
 
 ---
 
 ## Status
 
-**v0.3 — early but production-tested.** 69 tests, ruff clean, wheel built
+**v0.5 — early but production-tested.** 92 tests, ruff clean, wheel built
 clean. API may change before v1.0; the gate decision schema carries a
 `schema_version` field so audit-log consumers can handle older records.
 Issues and PRs welcome.

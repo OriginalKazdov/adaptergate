@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-05-18
+
+### The moat — recipe library + observed_efficacy
+
+The strategist's pick from the v0.2 council review: a *typed* library of
+paper-derived intervention recipes, indexed against slice signatures, with
+an empirically-tracked ``observed_efficacy`` column that strengthens with
+every customer's application. Generic eval frameworks (Braintrust, DeepEval,
+LangSmith) tell you *what* failed. v0.5 tells you *what to do*, ranked by
+*what has worked* across N prior applications.
+
+This is the asset that compounds across customers and cannot be replicated
+by force of capital.
+
+#### Added — new public API
+
+- **`Recipe`** dataclass (``adaptergate.recipes.Recipe``) — a typed
+  intervention with ``intervention_type``, ``applies_when`` slice
+  predicates, paper citation, default params.
+- **`RecipeApplication`** dataclass — one customer's use of one recipe
+  with measured before/after delta, tenant-anonymized.
+- **`RecipeRecommendation`** dataclass — a scored pick.
+- **`RecipeStore`** — JSONL-backed library (``recipes.jsonl``) and
+  append-only application log (``applications.jsonl``).
+- **`recommend(gate_decision, store)`** — rank recipes for a rejected
+  decision by ``observed_efficacy``. Evidence beats no-evidence; recipes
+  with prior applications outrank fresh entries.
+- **`hash_tenant(tenant_id)`** — anonymize for cross-customer logging.
+
+#### Added — CLI
+
+- `adaptergate recipes seed --recipes PATH` — populate from the
+  package-bundled seed library.
+- `adaptergate recipes list --recipes PATH`
+- `adaptergate recipes show RECIPE_ID --recipes PATH`
+- `adaptergate recommend-cmd --decision audit.jsonl --recipes PATH`
+  (registered as ``adaptergate recommend`` in the CLI tree)
+
+#### Seed library (ships with the package)
+
+Seven hand-curated recipes derived from May-2026 CL/PEFT literature:
+
+  - **ProCL slot rebalance** (arXiv 2605.13162) — allocate a new program
+    slot for the driver-slice queries.
+  - **Online-LoRA learning-rate decay** (arXiv 2411.05663).
+  - **N-LoRA subspace orthogonalization** (arXiv 2408.06133).
+  - **Replay buffer prune** (no citation — heuristic).
+  - **LoRA rank reduction** (no citation — heuristic).
+  - **Silent Collapse trust-throttle** (arXiv 2605.14588) — τ-based LR scaling.
+  - **StableEdit localized patch** (arXiv 2605.11836) — surgical layer edit.
+
+Each ships with intervention_type, slice predicates, default params, paper
+citation. Customers can add their own recipes; the seed is just a start.
+
+#### Tests
+
+11 new tests covering Recipe.matches, RecipeStore roundtrip, recommend
+ranking, evidence-beats-no-evidence ordering, hash_tenant determinism.
+Total 92 passing. Ruff clean.
+
+#### Deferred to v0.5.x / v0.6
+
+- **Automated radar.db → recipe ingestion** — LLM-driven extraction from
+  newly-published CL papers into typed recipes. Hard problem; quality
+  control needs care. Manual recipe authoring works for v0.5.0.
+- **Cross-tenant pattern matching** — surfacing "this regression style
+  failed at 47 other tenants." Requires a multi-tenant application
+  corpus; emerges naturally as adoption grows.
+
+---
+
 ## [0.4.0] — 2026-05-18
 
 ### Retention quick wins (from the CTO buyer agent's 30-day frustration list)
