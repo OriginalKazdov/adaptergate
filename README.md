@@ -255,18 +255,26 @@ Recipes for driver slice: intent=billing_dispute
    Reduce the LoRA learning rate and re-run training...
 ```
 
-The compounding mechanic: every customer who applies a recipe and logs the
-outcome via ``RecipeStore.add_application()`` strengthens the recommender
-for the next customer. Recipes with positive empirical efficacy outrank
-fresh entries; over time the ranking reflects what *actually* fixes
-regressions in the wild — a corpus competitors cannot replicate by force
-of capital.
+The compounding mechanic, scope-honest:
+
+- **Within a single store**: every recipe application you log via
+  ``RecipeStore.add_application()`` strengthens the recommender's ranking
+  for that store. Recipes with positive empirical efficacy outrank fresh
+  entries. This works today.
+- **Across tenants in a single store**: applications carry an anonymized
+  ``tenant_hash``; queries that aggregate across tenants ("recipe X has
+  worked for N other tenants on this slice signature") will land in v0.6.
+- **Across organizations** (your store vs. some other team's store): NOT
+  shipped. There is no centralized recipe-application service. Your
+  ``applications.jsonl`` stays on your disk.
 
 Seven seed recipes ship with the package: ProCL slot rebalance,
-Online-LoRA LR decay, N-LoRA orthogonalization, replay buffer prune, LoRA
-rank reduction, Silent Collapse trust-throttle, StableEdit localized patch.
-See ``adaptergate.data.seed_recipes`` (loaded via the ``recipes seed``
-CLI command).
+Online-LoRA LR decay, N-LoRA orthogonalization, Silent Collapse
+trust-throttle, StableEdit localized patch (all paper-cited), plus
+two heuristic recipes (replay-buffer prune, LoRA rank reduction —
+explicitly tagged in the seed file as ``"(heuristic)"`` since they're
+common practice rather than paper-cited). Load via
+``adaptergate recipes seed --recipes data/recipes.jsonl``.
 
 ---
 

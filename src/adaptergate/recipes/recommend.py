@@ -76,12 +76,14 @@ def _build_recommendation(
     else:
         mean = None
 
-    ci_low: float | None = None
-    ci_high: float | None = None
+    range_low: float | None = None
+    range_high: float | None = None
+    range_method: str | None = None
     if completed and len(completed) >= min_uses_for_ci:
-        ci_low, ci_high = _normal_ci(
+        range_low, range_high = _normal_range(
             [float(a.observed_delta or 0.0) for a in completed]
         )
+        range_method = "normal_n_gte_3"
 
     rationale_parts = [f"matches driver slice `{driver_slice_tag}`"]
     if mean is not None:
@@ -97,19 +99,24 @@ def _build_recommendation(
         expected_efficacy=mean,
         n_uses=len(completed),
         n_pending=len(pending),
-        confidence_low=ci_low,
-        confidence_high=ci_high,
+        efficacy_range_low=range_low,
+        efficacy_range_high=range_high,
+        range_method=range_method,
         matched_slice_tags=[driver_slice_tag],
         rationale=rationale,
     )
 
 
-def _normal_ci(values: list[float], z: float = 1.96) -> tuple[float, float]:
-    """Approximate 95% normal CI of the mean. Used when n_uses ≥ min_uses_for_ci.
+def _normal_range(values: list[float], z: float = 1.96) -> tuple[float, float]:
+    """Approximate range around the mean of ``values``.
 
-    With n=3-5 this is a wide band; with n=20+ it tightens enough to drive
-    ranking. We acknowledge the approximation in product copy; customers
-    can compute their own intervals from raw applications if they care.
+    Computed as ``mean ± z * (sample_std / sqrt(n))``. This is intentionally
+    NOT called a "95% confidence interval" in the public API: at the small
+    ``n`` (3-5) typical of an early recipe corpus the normal approximation
+    is wide and the coverage guarantee does not hold. The downstream field
+    name is ``efficacy_range_low/high`` and ``range_method="normal_n_gte_3"``
+    to make the approximation explicit. v0.6 may add Wilson-style or
+    bootstrap estimators as the corpus grows.
     """
     n = len(values)
     if n < 2:

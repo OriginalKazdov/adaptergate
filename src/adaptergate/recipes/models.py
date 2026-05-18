@@ -109,11 +109,19 @@ class RecipeRecommendation:
     n_pending: int = 0
     """Number of applications still pending re-evaluation."""
 
-    confidence_low: float | None = None
-    """Lower bound of a 95% Wilson-style confidence interval. ``None`` when
-    ``n_uses`` is below the minimum for a meaningful CI."""
+    efficacy_range_low: float | None = None
+    """Lower bound of an approximate range of efficacy. ``None`` when
+    ``n_uses`` is below the minimum for a meaningful range. Computed as a
+    normal-approximation interval — wide and noisy for small ``n``. See
+    ``range_method`` for the exact estimator used."""
 
-    confidence_high: float | None = None
+    efficacy_range_high: float | None = None
+
+    range_method: str | None = None
+    """Identifier for how the efficacy range was computed. ``None`` if no
+    range was emitted. Currently only ``"normal_n_gte_3"`` (mean ± 1.96·SE)
+    is supported; v0.6 may add Wilson-style or bootstrap intervals."""
+
     matched_slice_tags: list[str] = field(default_factory=list)
     rationale: str = ""
     """One-line description of WHY this recipe matched the current decision."""
@@ -126,8 +134,9 @@ class RecipeRecommendation:
             "expected_efficacy": self.expected_efficacy,
             "n_uses": self.n_uses,
             "n_pending": self.n_pending,
-            "confidence_low": self.confidence_low,
-            "confidence_high": self.confidence_high,
+            "efficacy_range_low": self.efficacy_range_low,
+            "efficacy_range_high": self.efficacy_range_high,
+            "range_method": self.range_method,
             "matched_slice_tags": self.matched_slice_tags,
             "rationale": self.rationale,
             "source_paper": self.recipe.source_paper_arxiv,

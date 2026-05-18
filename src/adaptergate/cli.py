@@ -529,6 +529,14 @@ def recommend_cmd(
     driver = decision.driver_slice
     if driver is not None:
         console.rule(f"[bold magenta]Recipes for driver slice: {driver.slice_tag}[/bold magenta]")
+
+    if all(r.n_uses == 0 for r in recs):
+        err_console.print(
+            "[yellow]Note:[/yellow] no prior applications have been logged for any"
+            " matching recipe. The ranking below reflects [bold]slice matching only[/bold],"
+            " not observed efficacy. To make the ranking empirical, log recipe outcomes"
+            " via [bold]RecipeStore.add_application(...)[/bold] after running a recipe."
+        )
     for i, r in enumerate(recs, 1):
         eff = (
             f"avg Δ={r.expected_efficacy:+.3f} over n={r.n_uses}"

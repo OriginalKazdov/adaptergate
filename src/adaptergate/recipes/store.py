@@ -1,14 +1,18 @@
 """Recipe and application storage — JSONL files on disk.
 
 Two files:
-  - ``recipes.jsonl`` — the curated library (typically seeded once, then
-    grown by adding new paper-derived recipes manually or via the v0.5.x
-    automated radar.db ingester).
-  - ``applications.jsonl`` — append-only log of every customer's recipe
-    use. This is the corpus that compounds.
+  - ``recipes.jsonl`` — the curated library. Seed it once via
+    ``adaptergate recipes seed``; grow it by hand-authoring new recipes.
+    Automated ingestion from a paper corpus (e.g. arXiv CL papers) is not
+    yet shipped; see the roadmap.
+  - ``applications.jsonl`` — append-only log of recipe applications, one
+    per (recipe, tenant, adapter) tuple. This is the substrate the
+    recommender ranks on; it compounds **within a single RecipeStore**.
+    Cross-tenant aggregation (anonymized via ``tenant_hash``) is roadmap.
 
-JSONL is the right substrate at this scale (10k recipes, 1M applications
-fits comfortably). Migration to a real DB is a v0.6+ concern.
+JSONL is the right substrate at small-to-mid scale (tens of thousands of
+recipes, low-millions of applications); migration to a real DB is a
+post-PMF concern.
 """
 
 from __future__ import annotations

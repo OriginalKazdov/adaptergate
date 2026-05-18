@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-05-18
+
+### Honesty pass (from the v0.5 council re-review)
+
+The 3-agent re-review of v0.5 was generous on engineering but flagged five
+specific credibility risks. All five fixed:
+
+1. **Heuristic recipes tagged honestly.** Two of the seven seed recipes
+   (``replay_buffer_prune_recent_v1``, ``lora_rank_reduce_v1``) had
+   ``source_paper_arxiv: null`` while the README pitched "paper-derived
+   intervention recipes." They are now explicitly tagged ``"(heuristic)"``
+   in name and description, with ``source_paper_title`` stating they are
+   standard practice rather than paper-cited.
+
+2. **No more "95% confidence interval" claim for n=3.** Renamed
+   ``RecipeRecommendation.confidence_low/high`` → ``efficacy_range_low/high``
+   and added a ``range_method: str | None`` field (currently
+   ``"normal_n_gte_3"``) so downstream consumers see exactly how the
+   interval was computed. With n=3-5 the normal approximation is wide and
+   the 95% coverage guarantee does not hold — calling it a CI was
+   statistically dishonest.
+
+3. **README scope-honest about compounding.** The "compounds across
+   customers" line is removed in favor of three explicit tiers:
+   within-store (works today), within-store cross-tenant aggregation
+   (v0.6 roadmap), cross-organization (not shipped, no central service
+   exists).
+
+4. **Ghost roadmap reference removed.** The ``store.py`` docstring used to
+   reference an "automated radar.db ingester" that does not exist. Rewritten
+   to describe the actual state (manual seeding + future automation) without
+   implying shipped features.
+
+5. **CLI cold-start disclaimer.** When ``recommend-cmd`` runs against an
+   empty application log, it now prints a stderr note that the ranking
+   reflects slice matching only, not observed efficacy. This makes the
+   day-0 user experience honest about what the recommender can and cannot
+   do until applications accumulate.
+
+### No new features
+
+This is a documentation + naming patch. No new tests required; the rename
+of ``confidence_low/high`` → ``efficacy_range_low/high`` is internal and
+covered by the existing serialization tests. Total tests: 92. Ruff clean.
+
+---
+
 ## [0.5.0] — 2026-05-18
 
 ### The moat — recipe library + observed_efficacy
