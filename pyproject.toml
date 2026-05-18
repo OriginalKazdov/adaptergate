@@ -1,7 +1,7 @@
 [project]
 name = "adaptergate"
-version = "0.0.1"
-description = "Regression-gating for fine-tuned LLM adapters. Serving-stack agnostic."
+version = "0.2.0"
+description = "CI gate for per-tenant LoRA adapters that update online. Slice-level reject explain. Serving-stack agnostic."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}

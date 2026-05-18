@@ -8,21 +8,36 @@ and refuses to promote it if aggregate quality drops more than ε. Rejected
 adapters go to a replay buffer for later analysis. CI-friendly exit codes.
 Serving-stack agnostic: you supply a scorer callable, we supply the gate.
 
+When your held-out queries carry slice tags (intent, language, difficulty,
+whatever), the gate also tells you **which behavioral slice broke** — not
+just that *something* did. This is the seam between training-data lineage
+and per-tenant eval outcomes; it is where causal root-cause lives.
+
 ```
 $ adaptergate gate \
     --tenant acme \
-    --candidate adapter_v18 \
-    --baseline adapter_v17 \
+    --candidate adapter_v19 \
+    --baseline adapter_v18 \
     --holdout data/acme_holdout.jsonl \
     --scorer my_eval:score
 ─────────────────────────────────── REJECTED ───────────────────────────────────
 Tenant:    acme
-Candidate: adapter_v18
-Baseline:  adapter_v17
-Score:     0.878 → 0.831  (Δ=-0.047, ε=0.02)
-Held-out:  n=50
-Reason:    REJECTED: aggregate 0.878 → 0.831 (Δ=-0.047) over n=50.
+Candidate: adapter_v19
+Baseline:  adapter_v18
+Score:     0.901 → 0.311  (Δ=-0.591, ε=0.02)
+Held-out:  n=25
+Reason:    REJECTED: aggregate 0.901 → 0.311 (Δ=-0.591) over n=25.
            Drop exceeds ε=0.02.
+
+DRIVER SLICE: intent=billing_dispute   0.932 → 0.073  (Δ=-0.859, 10/10 regressed)
+  Failing query IDs: billing_1, billing_2, billing_3, billing_4, billing_5 + 5 more
+
+Slice breakdown (most-regressed first):
+  -0.859   10/10 regressed   intent=billing_dispute
+  -0.487    7/7  regressed   intent=technical_support
+  -0.346    8/8  regressed   intent=order_status
+
+25 queries regressed total
 $ echo $?
 1
 ```

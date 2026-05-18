@@ -48,6 +48,43 @@ class GateConfig:
 
 
 @dataclass
+class SliceAttribution:
+    """Per-slice regression breakdown.
+
+    For each slice tag in the held-out set (e.g. ``"intent=refund_request"``),
+    aggregates score deltas restricted to queries carrying that tag.
+
+    A held-out query carries slices when its payload includes a ``"slices"``
+    field, e.g. ``{"question_id": "q1", "slices": ["intent=refund", "lang=en"]}``.
+
+    The most-negative-delta slice is the "driver" — the behavioral cohort
+    your customer notices first when a candidate adapter regresses.
+    """
+
+    slice_tag: str
+    """The slice key/value pair, e.g. ``"intent=refund_request"``."""
+
+    n_total: int
+    """Queries in the held-out set carrying this slice."""
+
+    n_regressed: int
+    """Queries where candidate scored lower than baseline."""
+
+    score_baseline: float
+    """Average baseline score over this slice."""
+
+    score_candidate: float
+    """Average candidate score over this slice."""
+
+    delta: float
+    """``score_candidate - score_baseline``. Negative = slice regressed."""
+
+    regressed_query_ids: list[str] = field(default_factory=list)
+    """The specific queries that regressed — for showing the customer the
+    actual failing examples."""
+
+
+@dataclass
 class GateDecision:
     """Result of running the gate on a candidate adapter."""
 
@@ -64,7 +101,11 @@ class GateDecision:
     reason: str
     timestamp: str
     per_query: list[dict[str, Any]] = field(default_factory=list)
-    """For DriftCouncil downstream: which queries regressed, which improved."""
+    """Per-query baseline + candidate scores + delta. Downstream consumers
+    (e.g. DriftCouncil) reason over this list."""
+    slice_attributions: list[SliceAttribution] = field(default_factory=list)
+    """Per-slice breakdown, sorted with the most-regressed slice first.
+    Only populated when held-out queries carry a ``"slices"`` field."""
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(asdict(self), indent=indent, default=str)
@@ -78,6 +119,18 @@ class GateDecision:
     def improvements(self) -> list[dict[str, Any]]:
         """Queries that scored higher with the candidate."""
         return [q for q in self.per_query if q["delta"] > 0]
+
+    @property
+    def driver_slice(self) -> SliceAttribution | None:
+        """The slice with the largest score drop, if any.
+
+        Returns ``None`` if no slices were declared on the held-out set, or
+        if no slice regressed.
+        """
+        if not self.slice_attributions:
+            return None
+        worst = self.slice_attributions[0]
+        return worst if worst.delta < 0 else None
 
 
 class RegressionGate:
@@ -174,6 +227,7 @@ class RegressionGate:
         baseline_total = 0.0
         candidate_total = 0.0
         any_regressed_clean = False
+        slice_buckets: dict[str, list[dict[str, Any]]] = {}
 
         for q in queries:
             score_baseline = scorer(baseline_id, q) if baseline_id else 0.0
@@ -181,14 +235,15 @@ class RegressionGate:
             delta = score_candidate - score_baseline
             baseline_total += score_baseline
             candidate_total += score_candidate
-            per_query.append(
-                {
-                    "query_id": q.get("question_id") or q.get("id") or q.get("query_id"),
-                    "score_baseline": score_baseline,
-                    "score_candidate": score_candidate,
-                    "delta": delta,
-                }
-            )
+            row = {
+                "query_id": q.get("question_id") or q.get("id") or q.get("query_id"),
+                "score_baseline": score_baseline,
+                "score_candidate": score_candidate,
+                "delta": delta,
+            }
+            per_query.append(row)
+            for slice_tag in q.get("slices") or []:
+                slice_buckets.setdefault(slice_tag, []).append(row)
             if self.config.strict_per_query and score_baseline == 1.0 and score_candidate < 1.0:
                 any_regressed_clean = True
 
@@ -210,6 +265,8 @@ class RegressionGate:
             strict_violation=any_regressed_clean,
         )
 
+        slice_attributions = self._attribute_slices(slice_buckets)
+
         return GateDecision(
             accepted=accepted,
             candidate_id=candidate_id,
@@ -223,7 +280,39 @@ class RegressionGate:
             reason=reason,
             timestamp=now,
             per_query=per_query,
+            slice_attributions=slice_attributions,
         )
+
+    @staticmethod
+    def _attribute_slices(
+        slice_buckets: dict[str, list[dict[str, Any]]],
+    ) -> list[SliceAttribution]:
+        """Aggregate per-query results into per-slice attributions.
+
+        Output is sorted most-regressed-first so ``slice_attributions[0]``
+        is the driver slice (the one your customer will notice first).
+        """
+        attributions: list[SliceAttribution] = []
+        for slice_tag, rows in slice_buckets.items():
+            n_total = len(rows)
+            if n_total == 0:
+                continue
+            score_baseline = sum(r["score_baseline"] for r in rows) / n_total
+            score_candidate = sum(r["score_candidate"] for r in rows) / n_total
+            regressed = [r for r in rows if r["delta"] < 0]
+            attributions.append(
+                SliceAttribution(
+                    slice_tag=slice_tag,
+                    n_total=n_total,
+                    n_regressed=len(regressed),
+                    score_baseline=score_baseline,
+                    score_candidate=score_candidate,
+                    delta=score_candidate - score_baseline,
+                    regressed_query_ids=[r["query_id"] for r in regressed],
+                )
+            )
+        attributions.sort(key=lambda s: s.delta)
+        return attributions
 
     def _reason(
         self,

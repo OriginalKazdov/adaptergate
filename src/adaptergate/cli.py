@@ -158,10 +158,37 @@ def gate(
         )
         console.print(f"Held-out:  n={decision.holdout_size}")
         console.print(f"Reason:    {decision.reason}")
+
+        driver = decision.driver_slice
+        if driver is not None:
+            console.print(
+                f"\n[bold red]DRIVER SLICE:[/bold red] [magenta]{driver.slice_tag}[/magenta]"
+                f"   {driver.score_baseline:.3f} → {driver.score_candidate:.3f}"
+                f"  (Δ={driver.delta:+.3f}, {driver.n_regressed}/{driver.n_total} regressed)"
+            )
+            if driver.regressed_query_ids:
+                preview = ", ".join(driver.regressed_query_ids[:5])
+                more = (
+                    f" + {len(driver.regressed_query_ids) - 5} more"
+                    if len(driver.regressed_query_ids) > 5
+                    else ""
+                )
+                console.print(f"  Failing query IDs: {preview}{more}")
+
+        if decision.slice_attributions and len(decision.slice_attributions) > 1:
+            console.print("\n[bold]Slice breakdown[/bold] (most-regressed first):")
+            for s in decision.slice_attributions:
+                colour = "red" if s.delta < 0 else "green"
+                console.print(
+                    f"  [{colour}]{s.delta:+.3f}[/{colour}]   "
+                    f"{s.n_regressed}/{s.n_total} regressed   "
+                    f"[magenta]{s.slice_tag}[/magenta]"
+                )
+
         if decision.regressions:
-            console.print(f"\n[yellow]{len(decision.regressions)} queries regressed[/yellow]")
+            console.print(f"\n[yellow]{len(decision.regressions)} queries regressed total[/yellow]")
         if decision.improvements:
-            console.print(f"[green]{len(decision.improvements)} queries improved[/green]")
+            console.print(f"[green]{len(decision.improvements)} queries improved total[/green]")
 
     raise typer.Exit(0 if decision.accepted else 1)
 

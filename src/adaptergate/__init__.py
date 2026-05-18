@@ -1,5 +1,5 @@
-"""adaptergate — multi-tenant LoRA serving with regression-gated continual updates.
+"""adaptergate — CI gate for per-tenant LoRA adapters that update online.
 
 See CONTEXT.md for project background and NOTICE for upstream attribution.
 """
-__version__ = "0.0.1"
+__version__ = "0.2.0"
