@@ -118,6 +118,29 @@ class HoldoutSet:
     def __iter__(self) -> Iterator[HoldoutQuery]:
         return iter(self._queries)
 
+    def staleness_days(self) -> int | None:
+        """Return days since the most-recently-added query was added.
+
+        ``None`` when the held-out set is empty. The CLI uses this to warn
+        the user when their held-out set hasn't been refreshed in a while —
+        stale held-out sets fail to reflect current traffic, which causes
+        the gate to reject candidates for "regressions" that are actually
+        eval-set drift, not adapter drift.
+        """
+        if not self._queries:
+            return None
+        from datetime import datetime, timezone
+
+        latest_str = max(q.added_at for q in self._queries)
+        try:
+            latest_dt = datetime.fromisoformat(latest_str)
+            if latest_dt.tzinfo is None:
+                latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        now = datetime.now(timezone.utc)
+        return max(0, (now - latest_dt).days)
+
     def _derive_id(self, payload: dict[str, Any]) -> str:
         for key in ("query_id", "question_id", "id"):
             if key in payload:

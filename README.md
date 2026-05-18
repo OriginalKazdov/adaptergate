@@ -221,7 +221,40 @@ for q in decision.regressions:
 
 ---
 
-## What's in the box (v0.3)
+## CI integration & output formats
+
+```bash
+# Human-readable CLI output (default)
+adaptergate gate --tenant acme --candidate v19 --baseline v18 \
+    --holdout data/acme.jsonl --scorer my_eval:score
+
+# Structured JSON for piping into your own tooling
+adaptergate gate ... --format json
+
+# GitHub-flavored Markdown for PR comments
+adaptergate gate ... --format pr-comment | gh pr comment "$PR" --body-file -
+
+# Configurable failing-ID preview
+adaptergate gate ... --show-failures 20
+
+# Detect stale held-out sets
+adaptergate gate ... --staleness-threshold-days 14
+```
+
+The CLI surfaces three kinds of warnings on stderr (so they survive
+``--format json`` piping):
+
+- **Malformed slices** — when a query's ``slices`` field is a string
+  instead of a list (common typo).
+- **Suspected duplicate slice tags** — when two slice tags look alike
+  (e.g. ``"billing_dispute"`` and ``"intent=billing_dispute"``), reported
+  via ``GateDecision.suspected_duplicate_slices``.
+- **Held-out staleness** — when your held-out set hasn't been refreshed
+  in N days. Stops you from misreading eval-set drift as adapter drift.
+
+---
+
+## What's in the box (v0.4)
 
 ```
 adaptergate/

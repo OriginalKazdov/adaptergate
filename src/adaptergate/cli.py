@@ -107,7 +107,19 @@ def gate(
     replay_path: Optional[Path] = typer.Option(
         None, help="If decision is rejected, append to this replay buffer."
     ),
-    quiet: bool = typer.Option(False, help="Print only JSON decision."),
+    output_format: str = typer.Option(
+        "human", "--format", "-f",
+        help="Output format: human (rich CLI, default), json (JSON to stdout), pr-comment (GitHub-flavored Markdown for PR comments).",
+    ),
+    show_failures: int = typer.Option(
+        5, "--show-failures",
+        help="How many failing query IDs to preview under the driver slice (default 5).",
+    ),
+    staleness_threshold_days: int = typer.Option(
+        30, "--staleness-threshold-days",
+        help="Warn if the held-out set has not been updated in this many days.",
+    ),
+    quiet: bool = typer.Option(False, help="Alias for --format json (kept for backwards compatibility)."),
 ):
     """Evaluate a candidate adapter against a baseline. Exit 0 if accepted, 1 if rejected."""
     holdout = HoldoutSet(tenant_id=tenant, path=holdout_path)
@@ -143,72 +155,179 @@ def gate(
         buf = ReplayBuffer(tenant_id=tenant, path=replay_path)
         buf.add(decision)
 
+    # Compute holdout staleness once so any output format can surface it.
+    staleness_days = holdout.staleness_days()
+
     if quiet:
+        output_format = "json"
+
+    if output_format == "json":
         typer.echo(decision.to_json())
+    elif output_format == "pr-comment":
+        typer.echo(_render_pr_comment(decision, staleness_days=staleness_days))
     else:
-        verdict_style = "green" if decision.accepted else "red"
-        verdict = "ACCEPTED" if decision.accepted else "REJECTED"
-        console.rule(f"[{verdict_style}]{verdict}[/{verdict_style}]")
-        baseline_display = decision.baseline_id or "(none)"
-        console.print(f"Tenant:    [cyan]{decision.tenant_id}[/cyan]")
-        console.print(f"Candidate: [cyan]{decision.candidate_id}[/cyan]")
-        console.print(f"Baseline:  [cyan]{baseline_display}[/cyan]")
-        console.print(
-            f"Score:     {decision.score_baseline:.3f} → {decision.score_candidate:.3f}"
-            f"  (Δ={decision.delta:+.3f}, ε={decision.epsilon})"
+        _render_human(
+            decision,
+            staleness_days=staleness_days,
+            staleness_threshold_days=staleness_threshold_days,
+            show_failures=show_failures,
         )
-        console.print(f"Held-out:  n={decision.holdout_size}")
-        console.print(f"Reason:    {decision.reason}")
-
-        driver = decision.driver_slice
-        if driver is not None:
-            console.print(
-                f"\n[bold red]DRIVER SLICE:[/bold red] [magenta]{driver.slice_tag}[/magenta]"
-                f"   {driver.score_baseline:.3f} → {driver.score_candidate:.3f}"
-                f"  (Δ={driver.delta:+.3f}, {driver.n_regressed}/{driver.n_total} regressed)"
-            )
-            if driver.pattern:
-                console.print(f"  [bold]Pattern:[/bold] {driver.pattern}")
-            named_ids = [qid for qid in driver.regressed_query_ids if qid]
-            if named_ids:
-                preview = ", ".join(named_ids[:5])
-                more = (
-                    f" + {len(named_ids) - 5} more"
-                    if len(named_ids) > 5
-                    else ""
-                )
-                console.print(f"  Failing query IDs: {preview}{more}")
-
-        if decision.slice_attributions and len(decision.slice_attributions) > 1:
-            console.print("\n[bold]Slice breakdown[/bold] (most-regressed first):")
-            for s in decision.slice_attributions:
-                colour = "red" if s.delta < 0 else "green"
-                console.print(
-                    f"  [{colour}]{s.delta:+.3f}[/{colour}]   "
-                    f"{s.n_regressed}/{s.n_total} regressed   "
-                    f"[magenta]{s.slice_tag}[/magenta]"
-                )
-
-        if decision.regressions:
-            note = ""
-            if decision.slice_attributions and len(decision.slice_attributions) > 1:
-                note = " (slice n_regressed values may sum higher when queries belong to multiple slices)"
-            console.print(
-                f"\n[yellow]{len(decision.regressions)} unique queries regressed[/yellow]"
-                f"{note}"
-            )
-        if decision.improvements:
-            console.print(f"[green]{len(decision.improvements)} unique queries improved[/green]")
-
-        if decision.malformed_slice_queries > 0:
-            err_console.print(
-                f"\n[yellow]Warning:[/yellow] {decision.malformed_slice_queries}"
-                f" held-out queries had a malformed 'slices' field"
-                f" (expected list, got non-list). Those queries contributed to"
-                f" aggregate scoring but were skipped for slice attribution."
-            )
 
     raise typer.Exit(0 if decision.accepted else 1)
+
+
+def _render_human(
+    decision,
+    *,
+    staleness_days: Optional[int],
+    staleness_threshold_days: int,
+    show_failures: int,
+) -> None:
+    """Render the gate decision to a human-friendly terminal."""
+    verdict_style = "green" if decision.accepted else "red"
+    verdict = "ACCEPTED" if decision.accepted else "REJECTED"
+    console.rule(f"[{verdict_style}]{verdict}[/{verdict_style}]")
+    baseline_display = decision.baseline_id or "(none)"
+    console.print(f"Tenant:    [cyan]{decision.tenant_id}[/cyan]")
+    console.print(f"Candidate: [cyan]{decision.candidate_id}[/cyan]")
+    console.print(f"Baseline:  [cyan]{baseline_display}[/cyan]")
+    console.print(
+        f"Score:     {decision.score_baseline:.3f} → {decision.score_candidate:.3f}"
+        f"  (Δ={decision.delta:+.3f}, ε={decision.epsilon})"
+    )
+    console.print(f"Held-out:  n={decision.holdout_size}")
+    console.print(f"Reason:    {decision.reason}")
+
+    driver = decision.driver_slice
+    if driver is not None:
+        console.print(
+            f"\n[bold red]DRIVER SLICE:[/bold red] [magenta]{driver.slice_tag}[/magenta]"
+            f"   {driver.score_baseline:.3f} → {driver.score_candidate:.3f}"
+            f"  (Δ={driver.delta:+.3f}, {driver.n_regressed}/{driver.n_total} regressed)"
+        )
+        if driver.pattern:
+            console.print(f"  [bold]Pattern:[/bold] {driver.pattern}")
+        named_ids = [qid for qid in driver.regressed_query_ids if qid]
+        if named_ids:
+            preview = ", ".join(str(x) for x in named_ids[:show_failures])
+            more = (
+                f" + {len(named_ids) - show_failures} more"
+                if len(named_ids) > show_failures
+                else ""
+            )
+            console.print(f"  Failing query IDs: {preview}{more}")
+
+    if decision.slice_attributions and len(decision.slice_attributions) > 1:
+        console.print("\n[bold]Slice breakdown[/bold] (most-regressed first):")
+        for s in decision.slice_attributions:
+            colour = "red" if s.delta < 0 else "green"
+            console.print(
+                f"  [{colour}]{s.delta:+.3f}[/{colour}]   "
+                f"{s.n_regressed}/{s.n_total} regressed   "
+                f"[magenta]{s.slice_tag}[/magenta]"
+            )
+
+    if decision.regressions:
+        note = ""
+        if decision.slice_attributions and len(decision.slice_attributions) > 1:
+            note = " (slice n_regressed values may sum higher when queries belong to multiple slices)"
+        console.print(
+            f"\n[yellow]{len(decision.regressions)} unique queries regressed[/yellow]"
+            f"{note}"
+        )
+    if decision.improvements:
+        console.print(f"[green]{len(decision.improvements)} unique queries improved[/green]")
+
+    if decision.malformed_slice_queries > 0:
+        err_console.print(
+            f"\n[yellow]Warning:[/yellow] {decision.malformed_slice_queries}"
+            f" held-out queries had a malformed 'slices' field"
+            f" (expected list, got non-list). Those queries contributed to"
+            f" aggregate scoring but were skipped for slice attribution."
+        )
+
+    if decision.suspected_duplicate_slices:
+        err_console.print(
+            "\n[yellow]Warning:[/yellow] suspected duplicate slice tags"
+            " (similarity ≥ 0.85). Consider normalising your held-out set:"
+        )
+        for a, b in decision.suspected_duplicate_slices:
+            err_console.print(f"  • [magenta]{a}[/magenta]  ↔  [magenta]{b}[/magenta]")
+
+    if staleness_days is not None and staleness_days > staleness_threshold_days:
+        err_console.print(
+            f"\n[yellow]Warning:[/yellow] held-out set has not been refreshed"
+            f" in {staleness_days} days (threshold: {staleness_threshold_days})."
+            f" Stale held-out sets may fail to reflect current traffic — consider"
+            f" adding fresh queries to avoid eval-set drift being misread as adapter drift."
+        )
+
+
+def _render_pr_comment(decision, *, staleness_days: Optional[int]) -> str:
+    """Render the gate decision as GitHub-flavored Markdown for a PR comment."""
+    icon = "✅" if decision.accepted else "🚫"
+    verdict = "ACCEPTED" if decision.accepted else "REJECTED"
+    lines: list[str] = [f"## {icon} adaptergate gate: **{verdict}**", ""]
+    lines.append(f"- **Tenant**: `{decision.tenant_id}`")
+    lines.append(
+        f"- **Candidate**: `{decision.candidate_id}`"
+        f" vs baseline `{decision.baseline_id or '(none)'}`"
+    )
+    lines.append(
+        f"- **Score**: {decision.score_baseline:.3f} → {decision.score_candidate:.3f}"
+        f" (Δ={decision.delta:+.3f}, ε={decision.epsilon})"
+    )
+    lines.append(f"- **Held-out**: n={decision.holdout_size}")
+    lines.append(f"- **Reason**: {decision.reason}")
+
+    driver = decision.driver_slice
+    if driver is not None:
+        lines.append("")
+        lines.append(f"### 🎯 Driver slice: `{driver.slice_tag}`")
+        lines.append(
+            f"- {driver.score_baseline:.3f} → {driver.score_candidate:.3f}"
+            f" (Δ={driver.delta:+.3f}, {driver.n_regressed}/{driver.n_total} regressed)"
+        )
+        if driver.pattern:
+            lines.append(f"- **Pattern**: {driver.pattern}")
+        named_ids = [str(x) for x in driver.regressed_query_ids if x]
+        if named_ids:
+            preview = ", ".join(f"`{x}`" for x in named_ids[:5])
+            more = f" + {len(named_ids) - 5} more" if len(named_ids) > 5 else ""
+            lines.append(f"- **Failing IDs**: {preview}{more}")
+
+    if decision.slice_attributions and len(decision.slice_attributions) > 1:
+        lines.append("")
+        lines.append("### Slice breakdown")
+        lines.append("| Δ | regressed | slice |")
+        lines.append("|---|---|---|")
+        for s in decision.slice_attributions:
+            lines.append(
+                f"| {s.delta:+.3f} | {s.n_regressed}/{s.n_total} | `{s.slice_tag}` |"
+            )
+
+    warnings: list[str] = []
+    if decision.malformed_slice_queries > 0:
+        warnings.append(
+            f"{decision.malformed_slice_queries} held-out queries had a malformed"
+            " `slices` field — skipped for slice attribution."
+        )
+    if decision.suspected_duplicate_slices:
+        pairs = ", ".join(
+            f"`{a}` ↔ `{b}`" for a, b in decision.suspected_duplicate_slices
+        )
+        warnings.append(f"Suspected duplicate slice tags: {pairs}")
+    if staleness_days is not None and staleness_days > 30:
+        warnings.append(f"Held-out set has not been refreshed in {staleness_days} days.")
+    if warnings:
+        lines.append("")
+        lines.append("### ⚠️ Warnings")
+        for w in warnings:
+            lines.append(f"- {w}")
+
+    lines.append("")
+    lines.append("_Generated by [adaptergate](https://github.com/OriginalKazdov/adaptergate)._")
+    return "\n".join(lines)
 
 
 @holdout_app.command("add")

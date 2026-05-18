@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-18
+
+### Retention quick wins (from the CTO buyer agent's 30-day frustration list)
+
+#### Added
+
+- **`--format`** flag on ``adaptergate gate``: ``human`` (default rich CLI),
+  ``json`` (structured for piping/CI consumers), ``pr-comment``
+  (GitHub-flavored Markdown for posting on pull requests). The previous
+  ``--quiet`` flag is preserved as an alias for ``--format json``.
+
+- **`--show-failures N`** flag on ``adaptergate gate``: configure how
+  many failing query IDs to preview under the driver slice. Defaults to 5.
+
+- **Suspected duplicate slice tag detection**. The gate now flags pairs of
+  slice tags that look like accidental duplicates (e.g. ``"billing_dispute"``
+  alongside ``"intent=billing_dispute"`` from different eval-set authors,
+  or hyphen-vs-underscore drift). Exposed as
+  ``GateDecision.suspected_duplicate_slices``; the CLI renders a stderr
+  warning when populated. We *report*, we do not *merge* — the customer
+  decides whether to normalize.
+
+- **Holdout staleness check**. ``HoldoutSet.staleness_days()`` returns days
+  since the most-recent query was added. The CLI warns when staleness
+  exceeds ``--staleness-threshold-days`` (default 30). Stops customers
+  from misreading eval-set drift as adapter drift.
+
+#### Tests
+
+12 new tests (5 dupe detection, 4 staleness, 3 PR-comment rendering).
+Total 81 passing. Ruff clean.
+
+#### Deferred to later
+
+- **Diff view** (``adaptergate review --query X``) — requires the scorer
+  contract to optionally return generated text alongside the score; that
+  API change is too disruptive for v0.4. Planned for v0.6.
+- **Baseline drift handling** — the gate currently treats baseline as
+  ground truth, which is wrong for online-updating adapters. Deeper rework;
+  planned alongside v0.5 recipe library.
+
+---
+
 ## [0.3.0] — 2026-05-18
 
 ### The Slack-converter

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -128,6 +129,10 @@ class GateDecision:
     """Count of held-out queries whose ``slices`` field was present but not
     a list (e.g. a bare string typo like ``"intent=foo"``). Those queries
     contribute to aggregate scoring but are skipped for slice attribution."""
+    suspected_duplicate_slices: list[list[str]] = field(default_factory=list)
+    """Pairs of slice tags that look like accidental duplicates (Levenshtein
+    similarity ≥ 0.85), e.g. ``["billing_dispute", "intent=billing_dispute"]``.
+    The gate reports them but does not merge them — the customer decides."""
     schema_version: int = SCHEMA_VERSION
     """Schema version of this decision blob — read by downstream consumers
     to handle older audit-log records gracefully."""
@@ -296,6 +301,7 @@ class RegressionGate:
         )
 
         slice_attributions = self._attribute_slices(slice_buckets)
+        suspected_dupes = _find_suspected_duplicate_slices(list(slice_buckets.keys()))
 
         return GateDecision(
             accepted=accepted,
@@ -312,6 +318,7 @@ class RegressionGate:
             per_query=per_query,
             slice_attributions=slice_attributions,
             malformed_slice_queries=malformed_slice_queries,
+            suspected_duplicate_slices=suspected_dupes,
         )
 
     @staticmethod
@@ -424,3 +431,44 @@ def _pick_query_id(q: dict[str, Any]) -> Any:
         if key in q and q[key] is not None:
             return q[key]
     return None
+
+
+def _find_suspected_duplicate_slices(
+    slice_tags: list[str], similarity_threshold: float = 0.85
+) -> list[list[str]]:
+    """Surface pairs of slice tags that look like accidental duplicates.
+
+    Two heuristics fire (either catches the pair):
+
+    1. **Substring containment**: one tag fully contains the other, and the
+       shorter tag is at least 5 chars. Catches the common case of one
+       author writing ``"billing_dispute"`` and another writing
+       ``"intent=billing_dispute"`` — same semantic, different naming.
+
+    2. **Sequence similarity**: ``difflib.SequenceMatcher`` ratio ≥
+       ``similarity_threshold`` (default 0.85). Catches separator drift
+       like ``"intent=billing-dispute"`` (hyphen) vs
+       ``"intent=billing_dispute"`` (underscore).
+
+    Output: list of ``[tag_a, tag_b]`` pairs in lexicographic order. We
+    *report*, we do not *merge* — silent merging would corrupt customer
+    semantics. The customer decides.
+    """
+    if len(slice_tags) < 2:
+        return []
+    sorted_tags = sorted(set(slice_tags))
+    dupes: list[list[str]] = []
+    for i, a in enumerate(sorted_tags):
+        for b in sorted_tags[i + 1 :]:
+            if _looks_like_dup(a, b, similarity_threshold):
+                dupes.append([a, b])
+    return dupes
+
+
+def _looks_like_dup(a: str, b: str, similarity_threshold: float) -> bool:
+    if a == b:
+        return False
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) >= 5 and short in long:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= similarity_threshold
