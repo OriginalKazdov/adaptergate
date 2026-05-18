@@ -2,13 +2,18 @@
 
 The wedge: prevent silent quality regression when serving updated LoRA
 adapters. Before promoting a candidate adapter to production, run it against
-a held-out eval set. If aggregate accuracy drops more than `epsilon`, reject.
+a per-tenant held-out set. Aggregate score drop > epsilon → reject.
+
+When held-out queries carry slice tags (``query["slices"] = [...]``), the
+gate also produces per-slice attribution — the cohort-level breakdown that
+tells you *which* behavioral slice broke, not just that *something* did.
 
 Inspiration:
   - Online-LoRA (arxiv 2411.05663) distribution-shift detection
   - Silent Collapse MTR (arxiv 2605.14588) drift signals
   - Our contribution: per-tenant scoping, deterministic version history,
-    rich GateDecision with per-query breakdown for the council to reason on.
+    rich GateDecision with per-query and per-slice attribution for the
+    council to reason on.
 """
 
 from __future__ import annotations
@@ -242,7 +247,7 @@ class RegressionGate:
                 "delta": delta,
             }
             per_query.append(row)
-            for slice_tag in q.get("slices") or []:
+            for slice_tag in _normalize_slices(q.get("slices")):
                 slice_buckets.setdefault(slice_tag, []).append(row)
             if self.config.strict_per_query and score_baseline == 1.0 and score_candidate < 1.0:
                 any_regressed_clean = True
@@ -360,3 +365,16 @@ def append_audit(decision: GateDecision, audit_log: Path) -> None:
     with audit_log.open("a", encoding="utf-8") as fh:
         fh.write(decision.to_json(indent=None))
         fh.write("\n")
+
+
+def _normalize_slices(raw: Any) -> list[str]:
+    """Return a clean ``list[str]`` of slice tags from a raw payload value.
+
+    Defensive: callers can hand us a string (common typo: ``"intent=foo"``
+    instead of ``["intent=foo"]``), ``None``, or a list with non-string
+    entries. We drop anything that isn't a string so the gate never iterates
+    characters or crashes on a malformed eval row.
+    """
+    if not isinstance(raw, list):
+        return []
+    return [s for s in raw if isinstance(s, str)]

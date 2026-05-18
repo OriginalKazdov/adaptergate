@@ -2,4 +2,4 @@
 
 See CONTEXT.md for project background and NOTICE for upstream attribution.
 """
-__version__ = "0.2.0"
+__version__ = "0.2.1"

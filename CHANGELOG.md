@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-05-18
+
+### Hardening
+
+- **Slice input validation** — when ``query["slices"]`` is a string instead of
+  a list (common typo), the gate no longer iterates characters and creates
+  per-letter slices. Non-string entries in the list are dropped silently.
+  Backed by 4 new robustness tests.
+- **Missing query IDs** — queries without ``question_id``/``id``/``query_id``
+  no longer pollute the CLI's "Failing query IDs" preview with stringified
+  ``None`` values; only named IDs are shown.
+- **`baseline_id=None` rendering** — CLI now displays ``(none)`` instead of
+  the literal string ``None`` when first-adapter promotion runs with
+  ``--no-require-calibration``.
+- **Module docstrings** updated to mention slice attribution.
+- **CLI help text** updated to match the v0.2 tagline.
+
+### Tests
+
+5 new robustness tests. Total: 57 passing. Ruff clean.
+
+---
+
 ## [0.2.0] — 2026-05-18
 
 ### The differential — slice-level reject explain

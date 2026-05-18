@@ -31,7 +31,7 @@ from adaptergate.gating import (
 )
 
 app = typer.Typer(
-    help="adaptergate — regression-gating for fine-tuned LLM adapters.",
+    help="adaptergate — CI gate for per-tenant LoRA adapters that update online.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -149,9 +149,10 @@ def gate(
         verdict_style = "green" if decision.accepted else "red"
         verdict = "ACCEPTED" if decision.accepted else "REJECTED"
         console.rule(f"[{verdict_style}]{verdict}[/{verdict_style}]")
+        baseline_display = decision.baseline_id or "(none)"
         console.print(f"Tenant:    [cyan]{decision.tenant_id}[/cyan]")
         console.print(f"Candidate: [cyan]{decision.candidate_id}[/cyan]")
-        console.print(f"Baseline:  [cyan]{decision.baseline_id}[/cyan]")
+        console.print(f"Baseline:  [cyan]{baseline_display}[/cyan]")
         console.print(
             f"Score:     {decision.score_baseline:.3f} → {decision.score_candidate:.3f}"
             f"  (Δ={decision.delta:+.3f}, ε={decision.epsilon})"
@@ -166,11 +167,12 @@ def gate(
                 f"   {driver.score_baseline:.3f} → {driver.score_candidate:.3f}"
                 f"  (Δ={driver.delta:+.3f}, {driver.n_regressed}/{driver.n_total} regressed)"
             )
-            if driver.regressed_query_ids:
-                preview = ", ".join(driver.regressed_query_ids[:5])
+            named_ids = [qid for qid in driver.regressed_query_ids if qid]
+            if named_ids:
+                preview = ", ".join(named_ids[:5])
                 more = (
-                    f" + {len(driver.regressed_query_ids) - 5} more"
-                    if len(driver.regressed_query_ids) > 5
+                    f" + {len(named_ids) - 5} more"
+                    if len(named_ids) > 5
                     else ""
                 )
                 console.print(f"  Failing query IDs: {preview}{more}")

@@ -75,13 +75,18 @@ def score(adapter_id: str, query: dict) -> float:
             base = 0.70
         is_bad = False
 
-    # Slice-specific adjustment.
-    for slice_tag in query.get("slices") or []:
-        bonus, penalty = _SLICE_DELTAS.get(slice_tag, (0.0, 0.0))
-        if is_bad:
-            base -= penalty
-        else:
-            base += bonus
+    # Slice-specific adjustment. Tolerate malformed `slices` values
+    # (e.g. a bare string) by treating non-list inputs as empty.
+    slices = query.get("slices")
+    if isinstance(slices, list):
+        for slice_tag in slices:
+            if not isinstance(slice_tag, str):
+                continue
+            bonus, penalty = _SLICE_DELTAS.get(slice_tag, (0.0, 0.0))
+            if is_bad:
+                base -= penalty
+            else:
+                base += bonus
 
     # Sprinkle deterministic per-query jitter.
     query_id = (
