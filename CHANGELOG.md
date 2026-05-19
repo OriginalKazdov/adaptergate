@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] — 2026-05-19
+
+### README/docs honesty pass (no code changes)
+
+External review by GPT surfaced three real credibility issues in the
+README that survived the v0.5.1 honesty pass. All fixed here. No code
+changed; PyPI release exists so the project page reflects the corrected
+docs.
+
+1. **README contradiction removed.** The `Scope` section's "NOT in (yet)"
+   list still mentioned "recipe library for repairs" — but `recipes/`
+   has shipped since v0.5.0 with `RecipeStore`, seed recipes, and
+   `recommend-cmd`. The list now reflects what's actually missing in
+   v0.5.4: cause hypothesis, automatic counterfactual generation,
+   `slice_epsilon` auto-calibration, cross-tenant recipe efficacy
+   aggregation, baseline-drift handling, recipe-loop falsification
+   (apply → re-gate → ACCEPT), multi-base-model orchestration, hosted
+   dashboard.
+
+2. **Recipe library honesty caveat made explicit.** Added a dedicated
+   paragraph in the Scope section: the recipe library is a structured
+   citation index with empirical-ranking plumbing in place, NOT a
+   "tells-you-what-to-do" oracle. Efficacy data accumulates via
+   `RecipeStore.add_application(...)`; cross-tenant aggregation is v0.6
+   work.
+
+3. **InsightFinder claim removed.** The v0.5.x README opened with a
+   "91% drift / 14-18-day detection lag" quote attributed to
+   InsightFinder 2026. The number could not be verified against a primary
+   InsightFinder source, only a secondary writeup. Replaced with a more
+   defensible sober framing about LLM drift as a production-reliability
+   problem.
+
+4. **BIRD-SQL run reframed as "reference smoke run", not benchmark.**
+   The Qwen 2.5 Coder 14B / `student_club` numbers (+26.6pp memorize,
+   +10.0pp held-out) are small-N single-seed and were being shown with
+   bold treatment that implied benchmark-level evidence. Now explicitly
+   labeled "Reference smoke run ... small N, single seed, not a
+   benchmark" and explicitly NOT central evidence — pointer to
+   `adaptergate demo silent` as the load-bearing case.
+
+5. **New "Who this is NOT for" section.** Explicitly disqualifies the
+   four common workflows adaptergate doesn't fit: hosted-API-only,
+   single-global-model, one-shot fine-tunes, no-held-out-yet. Saves
+   prospective users a wasted install.
+
+6. **Stale test count.** README claimed "92 tests" in two places after
+   v0.5.2/v0.5.3 added 14 more. Updated to 106.
+
+### Tests
+
+- Still 106/106 passing. No code changed in this release.
+
 ## [0.5.3] — 2026-05-18
 
 ### Dogfooding pass: fixes from a real-user CLI exercise

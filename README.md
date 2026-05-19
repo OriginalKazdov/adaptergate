@@ -52,9 +52,9 @@ Slack-paste-friendly by design.
 
 ## Why it exists
 
-> *91% of production LLMs experience silent behavioral drift within 90 days.
-> Detection lag from onset to first user complaint: 14-18 days.*
-> — InsightFinder, 2026
+LLM drift and silent regression are increasingly treated as production
+reliability problems — especially in systems that update continuously from
+user feedback rather than ship as one-shot fine-tunes.
 
 The dominant failure mode for teams serving per-customer fine-tuned LLMs is
 **silent regression on online updates**: a sub-skill (e.g. `JOIN-with-aggregate`
@@ -96,17 +96,19 @@ Closest neighbors:
 
 ### What we measured
 
-Reference run on Qwen 2.5 Coder 14B (4-bit, RTX 4090) with ProCL multi-LoRA
-slots on BIRD-SQL `student_club`:
+**Reference smoke run** on Qwen 2.5 Coder 14B (4-bit, single RTX 4090) with
+ProCL multi-LoRA slots on BIRD-SQL `student_club` — small N, single seed,
+not a benchmark:
 
 | | Before update | After update | Δ |
 |---|---|---|---|
-| `student_club` memorize set | 55.7% | 82.3% | **+26.6pp** |
-| Held-out other DBs (forgetting check) | 45.0% | 55.0% | **+10.0pp** |
+| `student_club` memorize set | 55.7% | 82.3% | +26.6pp |
+| Held-out other DBs (forgetting check) | 45.0% | 55.0% | +10.0pp |
 
-Zero catastrophic forgetting. The gate fires when this property breaks —
-the moment a candidate update would have damaged the held-out other-DBs
-score, it gets blocked.
+This run shows the *kind of regime* adaptergate is designed for — a
+candidate that improves the active domain without damaging held-out
+behaviors. The gate fires when that property breaks. Not central
+evidence; see `adaptergate demo silent` for the load-bearing case.
 
 ---
 
@@ -400,18 +402,48 @@ adaptergate/
     └── mock_scorer.py       # deterministic mock for trying things out
 ```
 
-Tests: 92 unit tests across the gating subsystem, cluster, robustness,
+Tests: 106 unit tests across the gating subsystem, cluster, robustness,
 recipes, and BIRD-SQL eval primitives. Run with `pytest`. Ruff-clean.
 
 ### Scope
 
 **In:** per-tenant gate, slice-level attribution, driver slice, failing
-query IDs, N-gram pattern of failing queries, replay buffer, audit log,
-CI exit codes.
+query IDs, N-gram pattern of failing queries, `--slice-epsilon` safety
+net, replay buffer + `replay show` drill-down, audit log, recipe
+library (citation index — see honesty caveat below), CI exit codes,
+`--format pr-comment` paste-ready Markdown, three bundled CPU-only demos.
 
 **NOT in (yet):** LLM-generated cause hypothesis, automatic counterfactual
-training data, recipe library for repairs, multi-base-model orchestration,
-hosted dashboard. See **Roadmap** below — these are deliberate omissions.
+training-row generation, `slice_epsilon` auto-calibration (rolling noise
+floor), cross-tenant recipe efficacy aggregation, baseline-drift handling
+(rolling-window baseline + staleness flag), recipe-loop falsification
+(apply recipe → re-gate → ACCEPT), multi-base-model orchestration, hosted
+dashboard. See **Roadmap** below.
+
+**Recipe library honesty caveat:** the recipe library currently ranks by
+slice-match heuristics only — no empirical efficacy data yet. The
+`recommend-cmd` output explicitly disclaims this. Efficacy data
+accumulates as people log applications via `RecipeStore.add_application(...)`
+after running a recipe; cross-tenant aggregation is v0.6 work. Read the
+library today as a structured citation index with the plumbing for
+empirical ranking already in place, not a "tells-you-what-to-do" oracle.
+
+### Who this is NOT for
+
+- **Teams whose only LLM workflow is calling hosted APIs** (no
+  fine-tuning, no adapters). adaptergate's gate runs against a scorer
+  you supply for two adapter IDs — if there are no adapters to compare,
+  the tool isn't useful.
+- **Teams shipping one global model, not per-tenant adapters.** The
+  held-out logic still applies but the per-tenant scoping is unused
+  weight; a generic eval CI like Braintrust/DeepEval/Promptfoo is a
+  better fit.
+- **Teams doing one-shot fine-tunes, not continuous online updates.**
+  If you fine-tune once a quarter and validate manually, a CI gate is
+  overkill — review the eval results yourself.
+- **Teams without a held-out eval set.** Build one first
+  (~20-50 representative queries per tenant); adaptergate gates
+  *against* held-outs, it doesn't generate them.
 
 ### Built on (cited, not invented)
 
@@ -453,7 +485,7 @@ detection, holdout staleness check (✅ shipped)
 
 ## Status
 
-**v0.5 — early but production-tested.** 92 tests, ruff clean, wheel built
+**v0.5 — early but production-tested.** 106 tests, ruff clean, wheel built
 clean. API may change before v1.0; the gate decision schema carries a
 `schema_version` field so audit-log consumers can handle older records.
 Issues and PRs welcome.
