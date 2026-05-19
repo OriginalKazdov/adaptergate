@@ -1,18 +1,25 @@
 # Show HN: I planted a silent bug in my own LoRA CI pipeline. adaptergate caught it in 60s.
 
-## Title options (rank-ordered by Devrel review)
+## Title options
 
-**A (recommended):**
+**A (dogfood-led, hook-heavy):**
 > Show HN: I planted a silent bug in my LoRA CI pipeline. My own tool caught it in 60s.
 
-**B:**
-> Show HN: adaptergate — a CI gate for per-tenant LoRA adapters with slice attribution
+**B (descriptive, search-friendly — GPT external review's suggestion):**
+> Show HN: adaptergate – CI gate for per-tenant LoRA adapter regressions
 
-**C:**
+**C (feature-led):**
 > Show HN: A CI gate that rejects LoRA updates when one customer slice silently regresses
 
-A is the right one — it leads with the dogfood receipt, which is the
-differential evidence. B/C lead with the feature, which is a weaker hook.
+Tradeoff: **A** is a stronger curiosity hook (HN voters historically reward
+personal-discovery framing), but **B** is what someone googling
+"LoRA CI gate" or "LoRA regression testing" would find later, and it
+matches how the niche audience self-describes the problem. **C** is the
+safest descriptive variant.
+
+Recommendation: lead with **A**. If A doesn't catch in the first 2h, repost
+under B in a week with a "v0.5.4 update" framing — the search-friendlier
+title gets longer-tail value via Google indexing.
 
 ---
 

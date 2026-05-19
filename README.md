@@ -292,13 +292,19 @@ for q in decision.regressions:
 
 ---
 
-## Recipe library — the answer to "what now?"
+## Recipe library — paper-derived mitigation suggestions
 
-When the gate rejects with a driver slice, adaptergate can recommend
-paper-derived intervention recipes ranked by **empirical efficacy across
-prior applications**. Generic eval frameworks tell you *what* failed;
-adaptergate v0.5+ tells you *what to do*, citing the paper each recipe
-came from.
+When the gate rejects with a driver slice, adaptergate **suggests
+paper-derived mitigation recipes to try next**, with the paper each
+recipe came from cited. Today the ranking is heuristic (slice-match
+strength), not empirical (efficacy across prior applications) — the
+plumbing for empirical ranking is in place via
+``RecipeStore.add_application()``, but real efficacy data accumulates
+with usage. See the "Recipe library honesty caveat" in the Scope
+section above for the full framing.
+
+Generic eval frameworks tell you *what* failed; adaptergate v0.5+
+also points you at *the literature most likely relevant to fixing it*.
 
 ```bash
 # Seed your recipe library from the bundled 7-recipe starter

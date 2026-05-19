@@ -1,8 +1,21 @@
-# Cold DM templates — adaptergate v0.5.3
+# Cold DM templates — adaptergate v0.5.4
 
-Five templates targeting different personas. Personalize the bracketed
-fields before sending. Goal: get the recipient to install + run
-`adaptergate demo silent` (60 seconds, no GPU). The demo is the pitch.
+**Target audience (5 ultra-narrow personas, per GPT external review):**
+
+1. Predibase / LoRAX ecosystem users (they already serve multi-LoRA in prod)
+2. vLLM multi-LoRA users (per-request adapter swapping)
+3. ML platform engineers at AI-product companies
+4. Founders of AI-infra companies (often technical, often building adjacent)
+5. People publicly talking about continual learning / PEFT / LLM evals
+   (Twitter/X threads, blog posts, conference talks)
+
+**Why so narrow:** the niche-market reality (acknowledged by both GPT and
+the CTO buyer agent) is that this is a devtool for ML infra teams, not
+a broad micro-SaaS. Don't waste cycles DMing generic AI startup CTOs;
+they don't have per-tenant LoRA infra and won't install. Find the 50–200
+people globally who *do* have the workflow and DM 5–10 of them. If 2–3
+say "this is interesting" you have signal; if 0 do, you have validation
+that this is portfolio/OSS territory, not SaaS territory.
 
 Tone notes:
 - Lead with the concrete artifact, not the company narrative.
@@ -12,141 +25,140 @@ Tone notes:
   line, they should still know what to do.
 - Sign with first name. Don't sign with "founder of adaptergate" — the
   product speaks; you don't need to.
+- Do NOT pitch pricing or hosted/SaaS in the first DM. The OSS tool is
+  the artifact; commercial conversations come if they reply positively.
 
 ---
 
-## DM 1 — CTO / VP Eng at a YC AI startup shipping per-tenant LoRAs
+## DM 1 — Predibase / LoRAX ecosystem user
 
-Subject: silent slice regression in per-tenant LoRAs
+Subject: pre-promotion regression gate for the adapters you're already serving
 
 Hey [Name],
 
-If [Company]'s LoRA pipeline ships per-customer adapters that update
-from feedback, you've probably hit the silent-slice failure mode: one
-intent collapses, aggregate score barely moves, customer Slacks support
-two weeks later.
+Saw you're running [LoRAX / Predibase] in prod. The piece that's usually
+hand-rolled around it is the *pre-promotion gate* — comparing a candidate
+adapter against the currently-serving one on a per-tenant held-out before
+swapping it in. I built an OSS tool for exactly that, [adaptergate](https://pypi.org/project/adaptergate/).
 
-I built an OSS CI gate for this called adaptergate. The `--slice-epsilon`
-flag rejects updates when any slice exceeds the slice-level threshold
-even if aggregate stays within `--epsilon`. There's a 60-second CPU
-demo that reproduces the side-by-side: aggregate-only eval ACCEPTS,
-slice attribution REJECTS.
+The killer case is silent slice regression: aggregate eval looks fine,
+one customer-facing intent has silently collapsed. `--slice-epsilon`
+rejects on that case where Braintrust-style mean-score doesn't:
 
 ```bash
 pip install 'adaptergate[demo]' && adaptergate demo silent
 ```
 
-Open to a 20-min call if you want to talk integration. Either way the
-demo is worth a minute.
+60s on any laptop. Curious if this maps to your real pre-promotion check
+or if you've solved it differently.
 
 — [First name]
 
 ---
 
-## DM 2 — ML Lead / Head of ML at a Series A AI startup
+## DM 2 — vLLM multi-LoRA user (per-request adapter swapping)
 
-Subject: per-slice regression gating, no LLM in the loop
+Subject: gating LoRA swaps in vLLM before they go live
 
 Hi [Name],
 
-Saw your [recent talk / blog post / paper] on [specific thing — fine-tuning,
-RAG, evals, whatever they recently shipped]. The point about
-[their specific point] resonates — that's the exact gap that pushed me
-to build adaptergate.
+If you're using vLLM's multi-LoRA support for [Company]'s workload, the
+piece nobody seems to have a clean answer for is what happens *between*
+your eval and the moment vLLM is serving the new adapter — the silent
+window where a freshly-trained adapter mis-routes one slice and the
+aggregate metric hides it.
 
-It's an OSS pre-deploy gate for LoRA adapters. The differential vs
-Braintrust/DeepEval is `--slice-epsilon` and a built-in N-gram failure
-pattern detector (no LLM, no cloud call). On a test I ran last week
-adaptergate caught the N-gram "international" in 5/5 failing queries —
-exactly the contamination dimension of the bug I'd planted.
-
-Try the killer demo:
+I built an OSS CI gate for that: [adaptergate](https://pypi.org/project/adaptergate/).
+Scorer-stack agnostic, exit codes for CI, `--slice-epsilon` for the
+silent-slice case, N-gram pattern detection on failing queries (no
+LLM in the loop).
 
 ```bash
 pip install 'adaptergate[demo]' && adaptergate demo silent
 ```
 
-Two seconds on any laptop. Curious what falls over when you point it
-at [Company]'s eval set.
+60s, no GPU. Worth a look if you're tightening the promotion path.
 
 — [First name]
 
 ---
 
-## DM 3 — DevOps / Platform Lead
+## DM 3 — ML platform engineer at an AI-product company
 
-Subject: CI gate for LoRA adapter promotions
+Subject: CI gate for the adapter promotion step you're probably hand-rolling
 
 Hey [Name],
 
-If your team is pushing LoRA artifacts through CI right now, you might
-find this useful: adaptergate is an OSS pre-deploy gate that reads a
-per-tenant held-out, runs a scorer callable you supply, rejects if
-aggregate or per-slice score drops too much. Exit codes plug straight
-into your CI. `--format pr-comment` gives you paste-ready GitHub Markdown.
+Most ML platform teams shipping fine-tuned adapters end up with a
+hand-rolled pre-deploy gate — usually a notebook + an eyeballed
+spreadsheet for each tenant's eval. adaptergate is that, but as an
+OSS CLI tool: scorer callable in, exit codes out, slice-level
+attribution for free, `--format pr-comment` for paste-ready GitHub
+PR Markdown.
 
 ```bash
 pip install 'adaptergate[demo]' && adaptergate demo silent
 ```
 
-If it doesn't fit your stack, no harm done. If it does, the integration
-is one scorer file + one CI step.
+60 seconds on any laptop. If it covers a notebook you currently
+maintain, the integration is one scorer file + one CI step.
 
 — [First name]
 
 ---
 
-## DM 4 — Founder of a competing OSS dev-tool / evals project
+## DM 4 — Founder of an AI-infra company (LoRA serving, eval tooling, etc.)
 
-Subject: complementary, not competing
+Subject: small adjacent OSS piece in your space
 
 Hi [Name],
 
-I'm a fan of [Project] — [specific thing you actually like about it].
-Wanted to flag that I just shipped adaptergate v0.5.3, an OSS pre-deploy
-gate for per-tenant LoRA adapters with slice-level rejection. Different
-problem space from [Project] but I suspect there's overlap in user base.
+I'm following [Company] — [specific thing you actually like about what
+they're building]. Just shipped adaptergate v0.5.4 on PyPI, an OSS
+pre-deploy gate for per-tenant LoRA adapters with slice-level
+rejection. Different problem space from [Company] but I suspect overlap
+in user base.
 
-Two things you might find useful:
+Two things you might find useful regardless:
 
-1. The `--slice-epsilon` flag implementation — same idea as Wilson interval
-   gating but with an explicit slice_min_size to avoid 1-of-2 outliers.
-   Code's in `src/adaptergate/gating/regression_gate.py`.
+1. The `--slice-epsilon` flag implementation: same idea as Wilson interval
+   gating but with an explicit `slice_min_size` to avoid 1-of-2 outliers.
+   Source in `src/adaptergate/gating/regression_gate.py`.
 
-2. The N-gram failure pattern detector — TF-IDF over failing queries,
-   stopword filter, no LLM. Three lines of cluster.py.
+2. The N-gram failure pattern detector: TF-IDF over failing queries,
+   stopword filter, no LLM, no cloud call. ~30 lines of `cluster.py`.
 
-Borrow freely (Apache 2.0). Happy to swap notes on what does and doesn't
-land for OSS dev-tool launches.
+Borrow freely (Apache 2.0). Open to swap notes on what does and doesn't
+land in this niche.
 
 — [First name]
 
 ---
 
-## DM 5 — Researcher whose paper you cite in the recipe library
+## DM 5 — Public CL / PEFT / LLM evals voice (Twitter, blog, talks)
 
-Subject: cited your [Paper] in an OSS tool
+Subject: small tool that touches the problem you write about
 
 Hi [Name],
 
-Quick note — I built [adaptergate](https://pypi.org/project/adaptergate/),
-an OSS CI gate for LoRA adapter regressions, and the recipe library
-maps driver slices to interventions from your [Paper] (arxiv [ID]).
-Specifically, [ProCL slot rebalance / Online-LoRA LR decay / N-LoRA
-orthogonalization / etc. — pick the one their paper is].
+Reading your [thread / post / talk] on [specific CL/PEFT/eval thing].
+The part where you said [specific quote or paraphrase] is exactly
+what pushed me to build the OSS tool I just shipped to PyPI —
+[adaptergate](https://pypi.org/project/adaptergate/), a CI gate for
+per-tenant LoRA adapters with slice-level rejection (`--slice-epsilon`)
+and N-gram failure-pattern detection.
 
-Two reasons I'm reaching out:
+The recipe library cites your area's papers (ProCL, Online-LoRA,
+N-LoRA, Silent Collapse/MTR). If you have a take on whether the
+specific intervention I'm citing for the [driver slice] case
+generalizes, I'd love a sanity check.
 
-1. The recipe is currently a citation index, not an empirical recommender
-   (no efficacy data yet). If you have anecdotes about when the
-   intervention works vs doesn't, I'd love to fold that into the
-   recommend-cmd output.
+```bash
+pip install 'adaptergate[demo]' && adaptergate demo silent
+```
 
-2. If anyone you know is shipping per-tenant LoRAs in prod, the silent
-   demo (`pip install 'adaptergate[demo]' && adaptergate demo silent`)
-   would be a fast way for them to see the gate in action.
-
-Either way, thanks for the paper — it's been load-bearing reading.
+60s on any laptop. Either way, thanks for the work — it's been
+load-bearing reading on this side.
 
 — [First name]
 
