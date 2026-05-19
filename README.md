@@ -119,12 +119,46 @@ pip install adaptergate
 Core install is lightweight (typer + pydantic + rich). The gate doesn't
 require torch, transformers, or any specific serving stack.
 
-For the BIRD-SQL example or ProCL/Silent Collapse reference implementations:
+```bash
+pip install "adaptergate[demo]"      # + scikit-learn for the bundled demos
+pip install "adaptergate[ml]"        # + torch/transformers/peft/bitsandbytes
+pip install "adaptergate[sql-example]"  # + sqlglot for AST-equality SQL scoring
+```
+
+---
+
+## 60-second demo (no setup, no GPU)
+
+Three bundled CPU-only demos. Each spins up two fake "LoRA adapter versions",
+runs the gate, and shows what adaptergate would have told you. Runs in seconds
+on any laptop.
 
 ```bash
-pip install "adaptergate[ml]"        # adds torch/transformers/peft/bitsandbytes
-pip install "adaptergate[sql-example]"  # adds sqlglot for the BIRD-SQL demo
+pip install 'adaptergate[demo]'
+
+adaptergate demo classifier    # aggregate regression caught by the gate
+adaptergate demo silent        # ← the killer one: silent slice collapse
+adaptergate demo sql           # generative scorer (SQL output)
 ```
+
+What each shows:
+
+- **`classifier`** — two scikit-learn classifiers as stand-ins for fine-tuned
+  LoRAs. Adapter B is trained on subtly contaminated labels. Gate REJECTS,
+  identifies the driver slice, surfaces the N-gram pattern across failing
+  queries, and recommends 3 paper-cited recipes for fixing it.
+- **`silent`** — the case adaptergate exists for. 300 queries, 5 of which
+  belong to a small but business-critical slice. Adapter B silently collapses
+  that one slice. The demo runs the gate **twice**: first like Braintrust
+  (aggregate-only) → ACCEPTED; then with `--slice-epsilon 0.10` → REJECTED.
+  Same data, different gate config, different outcome.
+- **`sql`** — generative scorer. Adapters emit SQL strings; the scorer does
+  AST-equality (or normalized string equality). Adapter B has a textbook
+  NULL-handling bug — silent on routine queries, catastrophic on the
+  null-check slice. Proves the gate + slice attribution + N-gram + recipes
+  all survive the classifier → autoregressive jump.
+
+If you have 60 seconds, run them in that order.
 
 ---
 
@@ -149,9 +183,29 @@ def score(adapter_id: str, query: dict) -> float:
 adaptergate holdout add \
     --tenant acme \
     --holdout data/acme_holdout.jsonl \
-    '{"question_id": "q1", "prompt": "...", "gold": "..."}'
-# ... add at least 20 queries (configurable)
+    '{"question_id": "q1", "prompt": "...", "gold": "...", "slices": ["intent=refund"]}'
+# ... add at least 20 queries (the gate's min_holdout_size).
 ```
+
+**Batch import.** For dozens or hundreds of queries, dump them as JSONL
+(one query payload per line) and import in one command:
+
+```bash
+adaptergate holdout import \
+    --tenant acme \
+    --holdout data/acme_holdout.jsonl \
+    --from-jsonl my_eval_set.jsonl
+# {"imported": 248, "skipped": 0, "size": 248}
+```
+
+Each line of the JSONL is one query payload — the same JSON shape you'd
+pass to `holdout add`. Malformed lines are skipped with a stderr warning,
+and the command exits 2 if any line was skipped (CI-friendly).
+
+Slices are validated at ingest: `"slices"` must be a JSON list of strings
+in `key=value` form (e.g. `["intent=refund", "lang=en"]`). The bare-string
+typo `"slices": "intent=foo"` is rejected — slice signal corruption is
+caught at the boundary, not on the next gate run.
 
 ### 3. Run the gate
 
@@ -170,22 +224,37 @@ adaptergate gate \
 Exit code 0 = accepted (safe to promote). 1 = rejected. Use this in your
 deploy script.
 
-### 4. Try without writing any code
+When a rejection happens, the audit log captures the full attribution and
+the replay buffer captures a one-line summary. To drill into a past
+rejection without grepping the audit log by timestamp:
 
 ```bash
-# 30 fake queries
-for i in $(seq 1 30); do
-  adaptergate holdout add --tenant demo --holdout demo.jsonl \
-    "{\"question_id\": \"q$i\"}"
-done
+adaptergate replay list --tenant acme --replay-path data/rejected.jsonl
+# {"candidate": "adapter_v18", "baseline": "adapter_v17", "delta": -0.154, ...}
 
-adaptergate gate \
-    --tenant demo \
-    --candidate adapter_good_v18 \
-    --baseline adapter_bad_v17 \
-    --holdout demo.jsonl \
-    --scorer adaptergate.examples.mock_scorer:score
+adaptergate replay show --tenant acme \
+    --replay-path data/rejected.jsonl \
+    --audit-log data/audit.jsonl \
+    --index 1
+# Renders the full slice attribution + N-gram pattern + failing query IDs
+# from the most recent rejection (--index 1).
 ```
+
+### 4. The `--slice-epsilon` safety net
+
+Aggregate-only gating accepts updates where one slice silently collapses but
+the rest of the held-out set masks it in the mean. Pass `--slice-epsilon` to
+make the gate reject when **any** slice drops more than that threshold,
+regardless of aggregate. Recommended starting point: `0.10` (slices are
+smaller / noisier than aggregate so the threshold is looser).
+
+```bash
+adaptergate gate ... --slice-epsilon 0.10
+```
+
+When slice-eps fires, the reject reason explicitly calls out the
+silent-regression case so you (or your CI bot) know aggregate alone would
+have missed it. See `adaptergate demo silent` for the contrast.
 
 ---
 

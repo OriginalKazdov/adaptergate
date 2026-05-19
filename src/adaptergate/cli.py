@@ -53,9 +53,15 @@ recipes_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+demo_app = typer.Typer(
+    help="Run bundled CPU-only demos (zero-config, requires scikit-learn).",
+    no_args_is_help=True,
+    add_completion=False,
+)
 app.add_typer(holdout_app, name="holdout")
 app.add_typer(replay_app, name="replay")
 app.add_typer(recipes_app, name="recipes")
+app.add_typer(demo_app, name="demo")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -98,7 +104,21 @@ def gate(
     scorer_spec: str = typer.Option(
         ..., "--scorer", help="Scorer in 'module:function' syntax."
     ),
-    epsilon: float = typer.Option(0.02, help="Max acceptable score drop."),
+    epsilon: float = typer.Option(0.02, help="Max acceptable aggregate score drop."),
+    slice_epsilon: Optional[float] = typer.Option(
+        None,
+        "--slice-epsilon",
+        help=(
+            "Max acceptable drop within any single slice (silent-regression safety net)."
+            " If set, the gate rejects when a slice collapses even if aggregate stays"
+            " within --epsilon. Recommended: 0.10 (slices are smaller / noisier)."
+        ),
+    ),
+    slice_min_size: int = typer.Option(
+        3,
+        "--slice-min-size",
+        help="Minimum slice size to consider for slice-level rejection. Smaller slices are surfaced in attribution but cannot trigger rejection.",
+    ),
     sample_n: Optional[int] = typer.Option(
         None, "--sample", help="Sample N queries from held-out (default: all)."
     ),
@@ -145,6 +165,8 @@ def gate(
     gate_inst = RegressionGate(
         GateConfig(
             epsilon=epsilon,
+            slice_epsilon=slice_epsilon,
+            slice_min_size=slice_min_size,
             strict_per_query=strict,
             require_calibration=require_calibration,
         )
@@ -339,6 +361,34 @@ def _render_pr_comment(decision, *, staleness_days: Optional[int]) -> str:
     return "\n".join(lines)
 
 
+def _validate_slice_payload(payload: dict) -> None:
+    """Raise BadParameter on common slice-tag mistakes that silently corrupt
+    the held-out set.
+
+    Caught here so the ingest path is the integrity boundary — the gate runs
+    later don't have to defend against malformed slices in production.
+    """
+    slices = payload.get("slices")
+    if slices is None:
+        return
+    if not isinstance(slices, list):
+        raise typer.BadParameter(
+            f"Query 'slices' must be a JSON list of strings, got {type(slices).__name__}."
+            f" Common mistake: writing \"slices\": \"intent=foo\" (bare string) instead of"
+            f' "slices": ["intent=foo"]. Fix the query and re-run.'
+        )
+    for i, tag in enumerate(slices):
+        if not isinstance(tag, str):
+            raise typer.BadParameter(
+                f"Query 'slices[{i}]' must be a string, got {type(tag).__name__}: {tag!r}."
+            )
+        if "=" not in tag:
+            raise typer.BadParameter(
+                f"Slice tag {tag!r} should be 'key=value' (e.g. 'intent=refund_routine')."
+                f" Slice tags without a '=' won't aggregate cohesively across queries."
+            )
+
+
 @holdout_app.command("add")
 def holdout_add(
     tenant: str = typer.Option(...),
@@ -351,9 +401,74 @@ def holdout_add(
         payload = json.loads(query_json)
     except json.JSONDecodeError as e:
         raise typer.BadParameter(f"Query is not valid JSON: {e}")
+    _validate_slice_payload(payload)
     holdout = HoldoutSet(tenant_id=tenant, path=holdout_path)
     record = holdout.add(payload, accepted_by=accepted_by)
     typer.echo(json.dumps({"added": record.query_id, "size": len(holdout)}))
+
+
+@holdout_app.command("import")
+def holdout_import(
+    tenant: str = typer.Option(...),
+    holdout_path: Path = typer.Option(..., "--holdout"),
+    from_jsonl: Path = typer.Option(
+        ...,
+        "--from-jsonl",
+        help=(
+            "JSONL file to import. Each line must be a JSON object with at least"
+            " a 'question_id' field. Other fields (question, gold, slices, etc.)"
+            " are stored verbatim in the held-out payload."
+        ),
+    ),
+    accepted_by: Optional[str] = typer.Option(
+        None, help="Tag every imported query as accepted by this adapter version."
+    ),
+):
+    """Batch-import queries from a JSONL file into the held-out set.
+
+    Each line must be one JSON object — the query payload. Lines that fail
+    validation are skipped with a warning to stderr; the rest are imported.
+    Exit status: 0 if all lines imported, 2 if any line was skipped.
+    """
+    if not from_jsonl.exists():
+        err_console.print(f"[red]File not found: {from_jsonl}[/red]")
+        raise typer.Exit(2)
+
+    holdout = HoldoutSet(tenant_id=tenant, path=holdout_path)
+    n_added = 0
+    skipped: list[tuple[int, str]] = []
+    with from_jsonl.open(encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as e:
+                skipped.append((lineno, f"invalid JSON: {e}"))
+                continue
+            try:
+                _validate_slice_payload(payload)
+            except typer.BadParameter as e:
+                skipped.append((lineno, str(e)))
+                continue
+            try:
+                holdout.add(payload, accepted_by=accepted_by)
+                n_added += 1
+            except Exception as e:
+                skipped.append((lineno, f"add failed: {e}"))
+
+    typer.echo(json.dumps({
+        "imported": n_added,
+        "skipped": len(skipped),
+        "size": len(holdout),
+    }))
+    for lineno, reason in skipped[:10]:
+        err_console.print(f"[yellow]Skipped line {lineno}: {reason}[/yellow]")
+    if len(skipped) > 10:
+        err_console.print(f"[yellow]... and {len(skipped) - 10} more skipped lines.[/yellow]")
+    if skipped:
+        raise typer.Exit(2)
 
 
 @holdout_app.command("size")
@@ -388,10 +503,13 @@ def holdout_list(
 @replay_app.command("list")
 def replay_list(
     tenant: str = typer.Option(...),
-    replay_path: Path = typer.Option(..., "--replay"),
+    replay_path: Path = typer.Option(
+        ..., "--replay", "--replay-path",
+        help="Path to the replay buffer JSONL (the same one passed to `gate --replay-path`).",
+    ),
     n: int = typer.Option(10, help="Show the most recent N rejected updates."),
 ):
-    """Show recent rejected updates."""
+    """Show recent rejected updates (compact one-line summary per rejection)."""
     buf = ReplayBuffer(tenant_id=tenant, path=replay_path)
     for r in buf.recent(n=n):
         typer.echo(
@@ -405,6 +523,83 @@ def replay_list(
                 }
             )
         )
+
+
+@replay_app.command("show")
+def replay_show(
+    tenant: str = typer.Option(...),
+    replay_path: Path = typer.Option(
+        ..., "--replay", "--replay-path",
+        help="Path to the replay buffer JSONL.",
+    ),
+    audit_log: Path = typer.Option(
+        ..., "--audit-log",
+        help="Path to the audit log JSONL (the same one passed to `gate --audit-log`).",
+    ),
+    index: int = typer.Option(
+        1, "--index", "-i",
+        help="Which rejection to show. 1 = most recent (default).",
+    ),
+    show_failures: int = typer.Option(
+        5, "--show-failures",
+        help="How many failing query IDs to preview under the driver slice.",
+    ),
+):
+    """Drill into a rejection from the replay buffer.
+
+    Cross-references the replay buffer's compact summary with the full audit
+    log entry (by timestamp) and renders the full slice attribution, N-gram
+    pattern, and driver-slice failing query IDs — same view as ``adaptergate
+    gate`` produced when the rejection happened.
+    """
+    if index < 1:
+        raise typer.BadParameter("--index must be ≥ 1 (1 = most recent).")
+    buf = ReplayBuffer(tenant_id=tenant, path=replay_path)
+    recent = list(buf.recent(n=index))
+    if index > len(recent):
+        err_console.print(
+            f"[red]Replay buffer has {len(recent)} rejection(s); --index={index} is out of range.[/red]"
+        )
+        raise typer.Exit(2)
+    target = recent[index - 1]
+
+    if not audit_log.exists():
+        err_console.print(f"[red]Audit log not found: {audit_log}[/red]")
+        raise typer.Exit(2)
+
+    matched: Optional[GateDecision] = None
+    with audit_log.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                data.get("candidate_id") == target.candidate_id
+                and data.get("timestamp") == target.rejected_at
+            ):
+                slice_attrs = [SliceAttribution(**s) for s in data.get("slice_attributions", [])]
+                data["slice_attributions"] = slice_attrs
+                matched = GateDecision(**data)
+                break
+
+    if matched is None:
+        err_console.print(
+            f"[red]No audit-log entry found for candidate={target.candidate_id} at"
+            f" {target.rejected_at}. Was --audit-log passed to `gate` when this rejection"
+            f" was recorded?[/red]"
+        )
+        raise typer.Exit(2)
+
+    _render_human(
+        matched,
+        staleness_days=None,
+        staleness_threshold_days=30,
+        show_failures=show_failures,
+    )
 
 
 @app.command()
@@ -578,6 +773,68 @@ def _load_decision(path: Path, *, line: int) -> GateDecision:
     ]
     data["slice_attributions"] = slice_attrs
     return GateDecision(**data)
+
+
+@demo_app.command("classifier")
+def demo_classifier():
+    """Run the classifier demo: aggregate regression caught by the gate.
+
+    sklearn TF-IDF + LR classifier as a stand-in for a fine-tuned LoRA.
+    Adapter B is trained on contaminated labels; the gate catches the
+    regression and surfaces the driver slice + N-gram pattern + recipes.
+    """
+    _run_demo("classifier")
+
+
+@demo_app.command("silent")
+def demo_silent():
+    """Run the silent-slice-regression demo: the case adaptergate exists for.
+
+    Same data, gate run TWICE — first without ``--slice-epsilon`` (aggregate-
+    only eval ACCEPTS the silent slice collapse), then with ``--slice-epsilon
+    0.10`` (adaptergate REJECTS). This contrast is the differential vs naive
+    mean-score evals like Braintrust / DeepEval.
+    """
+    _run_demo("silent")
+
+
+@demo_app.command("sql")
+def demo_sql():
+    """Run the generative-SQL demo: gate works on autoregressive output.
+
+    Adapters are Python functions emitting SQL strings. Scorer uses sqlglot
+    AST-equality when available (``pip install adaptergate[sql-example]``),
+    otherwise normalized string equality. Adapter B has a textbook
+    NULL-handling bug — silent on routine queries, catastrophic on the
+    null_check slice.
+    """
+    _run_demo("sql")
+
+
+def _run_demo(kind: str) -> None:
+    """Dispatcher used by the ``demo`` subcommands."""
+    try:
+        # Heavy deps (sklearn, etc.) live inside the demo modules. Import
+        # lazily so the rest of the CLI doesn't require them.
+        if kind == "classifier":
+            from adaptergate.demos.classifier import run as run_demo
+        elif kind == "silent":
+            from adaptergate.demos.silent import run as run_demo
+        elif kind == "sql":
+            from adaptergate.demos.sql import run as run_demo
+        else:
+            raise typer.BadParameter(f"Unknown demo kind: {kind!r}")
+    except ImportError as exc:
+        err_console.print(
+            f"[red]Could not load the {kind} demo: {exc}[/red]\n"
+            f"Demos require scikit-learn. Install with:\n"
+            f"    pip install 'adaptergate[demo]'"
+        )
+        raise typer.Exit(2)
+
+    import tempfile
+    workdir = Path(tempfile.mkdtemp(prefix=f"adaptergate-{kind}-demo-"))
+    run_demo(workdir)
 
 
 def main():

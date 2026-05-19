@@ -5,6 +5,126 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] — 2026-05-18
+
+### Dogfooding pass: fixes from a real-user CLI exercise
+
+After v0.5.2 shipped, the maintainer dogfooded the package end-to-end on a
+realistic fintech-triage scenario (52-query held-out, custom scorer, real
+silent bug in candidate adapter). 7 frictions surfaced; 5 are addressed here.
+
+1. **Bug fix: reason string lied about aggregate when both thresholds breached.**
+   When the candidate violated BOTH `--epsilon` (aggregate) AND `--slice-epsilon`,
+   the gate's reason string still said `"aggregate ... is within ε"` —
+   factually wrong. Now distinguishes:
+   - Silent-regression case (aggregate within ε, slice collapsed): unchanged.
+   - Both-violated case: explicitly states aggregate exceeds ε *and* the
+     worst slice also collapsed. New test
+     `test_slice_epsilon_still_rejects_aggregate_when_both_violated`
+     asserts the reason does NOT claim `"within ε"` when aggregate isn't.
+
+2. **`adaptergate holdout import --from-jsonl PATH` — batch import.** The
+   v0.5.2 CLI only supported `holdout add` one query at a time, forcing
+   real users with 100+ queries to either pay 100 subprocess startups or
+   reverse-engineer the JSONL format from the source. New `import`
+   subcommand reads a JSONL file, validates each line, skips malformed
+   ones with a stderr warning, and exits 2 if any line was skipped.
+
+3. **`adaptergate replay show --index N` — drill into a rejection.** The
+   v0.5.2 `replay list` was compact-only (`{candidate, baseline, delta, reason}`)
+   so debugging a rejection meant grepping `audit.jsonl` by timestamp. The
+   new `show` cross-references the replay buffer's compact summary with the
+   audit log entry (matched by candidate + timestamp) and renders the full
+   slice attribution + N-gram pattern + driver-slice failing query IDs —
+   the same view the gate produced when the rejection happened.
+
+4. **Flag alias `replay list --replay-path` (matches `gate --replay-path`).**
+   v0.5.2 used `--replay` here but `--replay-path` on the gate — same
+   concept, two different flags. `--replay-path` is now accepted on both
+   `replay list` and `replay show` (old `--replay` still works as alias for
+   one minor).
+
+5. **Slice payload validation in `holdout add`/`holdout import`.** A common
+   typo was passing `"slices": "intent=foo"` (bare string) instead of
+   `"slices": ["intent=foo"]` (list). v0.5.2 silently ingested the malformed
+   payload; the gate later flagged it as `malformed_slice_queries` after
+   the slice signal was already corrupted. Now `holdout add` rejects at
+   ingest with a precise error message, and `holdout import` skips the
+   line with a stderr warning.
+
+### Tests
+
+- 106 passing (was 97). 9 new tests covering the slice validation, batch
+  import skip/exit-code behavior, replay show, and the reason-string
+  accuracy fix.
+
+### Deferred to v0.6 (not v0.5.x)
+
+- `holdout list --limit` flag (cosmetic; dumps all queries today).
+- Auto-calibration of `--slice-epsilon` from a rolling noise floor
+  (CTO buyer's TRIAL → BUY upgrade trigger).
+- Cross-tenant recipe efficacy aggregation (cold-start ends when usage data
+  accumulates).
+- Baseline drift handling (rolling-window baseline + staleness flag).
+
+## [0.5.2] — 2026-05-18
+
+### Council-driven pass: prove the differential, fix the on-ramp
+
+3-agent council review of v0.5.1 (ML engineer / Devrel / CTO buyer) found
+the v0.5.1 CPU demo was "credible plumbing but not credible proof":
+
+- ML eng: aggregate dropped 40pp — even a t-test would catch it without
+  slice attribution. The differential vs Braintrust mean-score eval was
+  never demonstrated.
+- Devrel: README sent readers to write a scorer + held-out by hand. The
+  runnable proof was buried. Show HN would die at <10 upvotes.
+- CTO buyer: sklearn classifier didn't translate to autoregressive LoRAs;
+  no evidence the N-gram pattern survives the generative jump.
+
+All three addressed in v0.5.2:
+
+1. **New `--slice-epsilon` flag + `slice_min_size`.** The gate now rejects
+   when any slice's score drops by more than `--slice-epsilon`, even if
+   aggregate stays within `--epsilon`. This is the silent-regression
+   safety net — the case where mean-score eval accepts and the slice
+   collapse ships to prod. The reject reason explicitly flags the
+   silent-regression scenario so CI bots / dashboards know what fired.
+   `slice_min_size` (default 3) prevents 1-of-2 outliers from triggering
+   rejection. 5 new tests in `test_regression_gate.py`.
+
+2. **Three bundled CPU-only demos via `adaptergate demo ...`.** Zero
+   clone, zero config. `pip install adaptergate[demo] && adaptergate
+   demo silent` reproduces the killer differential: same data, gate
+   run twice — first aggregate-only (ACCEPTED), then with
+   `--slice-epsilon 0.10` (REJECTED).
+   - `adaptergate demo classifier` — aggregate regression (sklearn LR).
+   - `adaptergate demo silent` — silent slice regression (the load-bearing one).
+   - `adaptergate demo sql` — generative scorer (SQL output, AST-equality
+     via sqlglot or normalized string equality fallback). Adapter B has
+     a textbook `= NULL` bug — silent on routine queries, catastrophic
+     on the null_check slice.
+
+3. **Demos live in-package (`src/adaptergate/demos/`).** Bundled with
+   `pip install` so they work without `git clone`. New `demo` extras
+   group installs scikit-learn.
+
+4. **README on-ramp restructured.** New "60-second demo (no setup, no
+   GPU)" section moved above Quickstart. Removed the old `for i in $(seq
+   1 30)` mock-scorer block — `adaptergate demo` replaces it cleanly.
+   New section 4 documents `--slice-epsilon`.
+
+5. **Demo v1 fixes (HELD_OUT_ORDER variance + narrative gloss).** The
+   v0.5.1 demo's control slice was 15 copies of one templated query —
+   ML eng flagged it as a degenerate control. Now 15 lexically varied
+   order-status queries. Demo output now closes with a plain-English
+   "what just happened" explainer for non-ML readers.
+
+### Tests
+
+- 97 passing (was 92). 5 new tests for `slice_epsilon` behavior across
+  the silent-collapse / min-size / no-collapse / both-violations cases.
+
 ## [0.5.1] — 2026-05-18
 
 ### Honesty pass (from the v0.5 council re-review)

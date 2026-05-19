@@ -1,6 +1,6 @@
 [project]
 name = "adaptergate"
-version = "0.5.1"
+version = "0.5.3"
 description = "CI gate for per-tenant LoRA adapters that update online. Slice-level reject explain. Serving-stack agnostic."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Bundled CPU-only demos (`adaptergate demo ...`) — runs in seconds, no GPU.
+demo = ["scikit-learn>=1.3.0"]
 # ML stack for the serving examples + ProCL/Silent Collapse implementations.
 ml = [
     "torch>=2.5.0",
@@ -37,7 +39,7 @@ ml = [
 ]
 # vLLM serving integration (optional example).
 serve = ["vllm"]
-# BIRD-SQL example backing
+# BIRD-SQL example backing + SQL demo AST-equality scoring.
 sql-example = ["sqlglot>=25.0.0"]
 # Developer tooling
 dev = ["pytest", "ruff", "ipython"]

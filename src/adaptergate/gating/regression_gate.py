@@ -53,6 +53,25 @@ class GateConfig:
     """If True, refuse to gate if the baseline adapter wasn't pre-scored.
     Prevents apples-to-oranges comparisons after baseline changes."""
 
+    slice_epsilon: float | None = None
+    """If set, also reject when ANY slice's score drops by more than this
+    much, even when aggregate is within ``epsilon``. This is the safety net
+    against *silent slice regressions*: when one behavioral cohort silently
+    collapses while the rest of the held-out set masks it in the aggregate.
+
+    Set ``slice_epsilon`` looser than ``epsilon`` (e.g., 0.10) — slices are
+    smaller samples and noisier. ``None`` (default) preserves aggregate-only
+    gating for backwards compatibility.
+
+    Only fires for slices with at least ``slice_min_size`` queries to avoid
+    rejecting on a 1-of-2 outlier."""
+
+    slice_min_size: int = 3
+    """Minimum slice size to consider for slice-level rejection. Slices
+    smaller than this are still surfaced in attribution but cannot trigger
+    rejection on their own. Default 3 catches the most-common 'one bad
+    example' false-positive without missing real slice collapses."""
+
 
 @dataclass
 class SliceAttribution:
@@ -286,8 +305,15 @@ class RegressionGate:
         score_candidate_avg = candidate_total / n
         delta_avg = score_candidate_avg - score_baseline_avg
 
+        slice_attributions = self._attribute_slices(slice_buckets)
+        suspected_dupes = _find_suspected_duplicate_slices(list(slice_buckets.keys()))
+
+        slice_violation = self._find_slice_violation(slice_attributions)
+
         accepted = delta_avg >= -self.config.epsilon
         if self.config.strict_per_query and any_regressed_clean:
+            accepted = False
+        if slice_violation is not None:
             accepted = False
 
         reason = self._reason(
@@ -298,10 +324,8 @@ class RegressionGate:
             n=n,
             baseline_present=baseline_id is not None,
             strict_violation=any_regressed_clean,
+            slice_violation=slice_violation,
         )
-
-        slice_attributions = self._attribute_slices(slice_buckets)
-        suspected_dupes = _find_suspected_duplicate_slices(list(slice_buckets.keys()))
 
         return GateDecision(
             accepted=accepted,
@@ -359,6 +383,24 @@ class RegressionGate:
         attributions.sort(key=lambda s: s.delta)
         return attributions
 
+    def _find_slice_violation(
+        self, slice_attributions: list[SliceAttribution]
+    ) -> SliceAttribution | None:
+        """Return the worst slice that exceeds ``slice_epsilon``, or ``None``.
+
+        Caller has already sorted attributions most-regressed-first, so the
+        first qualifying slice is the worst one. Slices smaller than
+        ``slice_min_size`` are skipped to avoid 1-of-2 outlier false positives.
+        """
+        if self.config.slice_epsilon is None:
+            return None
+        for attribution in slice_attributions:
+            if attribution.n_total < self.config.slice_min_size:
+                continue
+            if attribution.delta < -self.config.slice_epsilon:
+                return attribution
+        return None
+
     def _reason(
         self,
         *,
@@ -369,12 +411,38 @@ class RegressionGate:
         n: int,
         baseline_present: bool,
         strict_violation: bool,
+        slice_violation: SliceAttribution | None,
     ) -> str:
         if strict_violation:
             return (
                 f"REJECTED (strict mode): candidate regressed on at least one"
                 f" query that previously scored 1.0. Aggregate: {score_baseline:.3f}"
                 f" → {score_candidate:.3f} (Δ={delta:+.3f}) over n={n}."
+            )
+        if slice_violation is not None:
+            slice_eps = self.config.slice_epsilon
+            aggregate_within_eps = delta >= -self.config.epsilon
+            if aggregate_within_eps:
+                # The headline silent-regression case: aggregate would have accepted,
+                # slice attribution catches the collapse.
+                return (
+                    f"REJECTED (slice regression): aggregate {score_baseline:.3f} →"
+                    f" {score_candidate:.3f} (Δ={delta:+.3f}) is within ε={self.config.epsilon},"
+                    f" BUT slice '{slice_violation.slice_tag}' collapsed"
+                    f" {slice_violation.score_baseline:.3f} → {slice_violation.score_candidate:.3f}"
+                    f" (Δ={slice_violation.delta:+.3f}) on n={slice_violation.n_total} queries,"
+                    f" exceeding slice_ε={slice_eps}. This is the silent-regression case:"
+                    f" mean-score eval would have accepted; slice attribution catches it."
+                )
+            # Both aggregate and slice fail — be honest about both.
+            return (
+                f"REJECTED (aggregate AND slice regression): aggregate {score_baseline:.3f} →"
+                f" {score_candidate:.3f} (Δ={delta:+.3f}) exceeds ε={self.config.epsilon};"
+                f" worst slice '{slice_violation.slice_tag}' also collapsed"
+                f" {slice_violation.score_baseline:.3f} → {slice_violation.score_candidate:.3f}"
+                f" (Δ={slice_violation.delta:+.3f}) on n={slice_violation.n_total} queries,"
+                f" exceeding slice_ε={slice_eps}. A naive mean-score eval would also have"
+                f" rejected, but slice attribution gives you the driver."
             )
         if not baseline_present:
             return (

@@ -192,3 +192,156 @@ def test_append_audit_writes_jsonl(tmp_path: Path):
     assert len(lines) == 2
     parsed = json.loads(lines[0])
     assert parsed["accepted"] is True
+
+
+# ─── slice_epsilon: silent-slice-regression safety net ────────────────────────
+
+def _silent_slice_holdout(n_silent: int = 10, n_rest: int = 50) -> list[dict]:
+    """Build a held-out set where ``n_silent`` queries belong to a small slice
+    (``intent=high_value``) and ``n_rest`` queries belong to a much larger slice
+    (``intent=routine``). Used to construct the silent-slice-collapse scenario.
+    """
+    queries: list[dict] = []
+    for i in range(n_silent):
+        queries.append({"question_id": f"hv_{i}", "slices": ["intent=high_value"]})
+    for i in range(n_rest):
+        queries.append({"question_id": f"r_{i}", "slices": ["intent=routine"]})
+    return queries
+
+
+def _silent_slice_scorer(rest_score: float = 1.0, hv_collapses: bool = True):
+    """Scorer where baseline=1.0 on every query, candidate=1.0 on routine,
+    but collapses to 0.0 on high_value slice when ``hv_collapses=True``.
+    """
+    def _scorer(adapter_id: str, query: dict) -> float:
+        if adapter_id == "baseline":
+            return 1.0
+        # candidate
+        if "intent=high_value" in query.get("slices", []) and hv_collapses:
+            return 0.0
+        return rest_score
+    return _scorer
+
+
+def test_slice_epsilon_none_preserves_legacy_behavior():
+    """When slice_epsilon is None (default), aggregate is the only signal."""
+    gate = RegressionGate(GateConfig(epsilon=0.20, slice_epsilon=None))
+    scorer = _silent_slice_scorer()
+    decision = gate.evaluate(
+        tenant_id="t1",
+        candidate_id="candidate",
+        baseline_id="baseline",
+        holdout=_silent_slice_holdout(n_silent=10, n_rest=50),
+        scorer=scorer,
+    )
+    # Aggregate: 1.0 → (50*1.0 + 10*0.0) / 60 = 0.833. Δ = -0.167, within ε=0.20.
+    assert decision.delta == pytest.approx(-10 / 60, abs=1e-3)
+    assert decision.accepted is True, "Legacy: aggregate within ε accepts even with collapsed slice"
+    # But attribution still shows it.
+    driver = decision.driver_slice
+    assert driver is not None
+    assert driver.slice_tag == "intent=high_value"
+    assert driver.delta == pytest.approx(-1.0, abs=1e-6)
+
+
+def test_slice_epsilon_rejects_silent_slice_collapse():
+    """slice_epsilon=0.10 rejects when a slice collapses despite aggregate-within-ε."""
+    gate = RegressionGate(GateConfig(epsilon=0.20, slice_epsilon=0.10))
+    scorer = _silent_slice_scorer()
+    decision = gate.evaluate(
+        tenant_id="t1",
+        candidate_id="candidate",
+        baseline_id="baseline",
+        holdout=_silent_slice_holdout(n_silent=10, n_rest=50),
+        scorer=scorer,
+    )
+    assert decision.accepted is False
+    assert "slice regression" in decision.reason.lower()
+    assert "intent=high_value" in decision.reason
+    assert "silent-regression" in decision.reason.lower()
+
+
+def test_slice_epsilon_ignores_slices_below_min_size():
+    """A 1-query slice should not trigger rejection even if it collapses 100%."""
+    gate = RegressionGate(GateConfig(epsilon=0.05, slice_epsilon=0.10, slice_min_size=3))
+    # Construct: 1 query in a "tiny" slice (collapses) + 50 routine queries (fine).
+    queries = (
+        [{"question_id": "tiny_0", "slices": ["intent=tiny"]}]
+        + [{"question_id": f"r_{i}", "slices": ["intent=routine"]} for i in range(50)]
+    )
+
+    def scorer(adapter_id: str, q: dict) -> float:
+        if adapter_id == "baseline":
+            return 1.0
+        return 0.0 if "intent=tiny" in q.get("slices", []) else 1.0
+
+    decision = gate.evaluate(
+        tenant_id="t1",
+        candidate_id="candidate",
+        baseline_id="baseline",
+        holdout=queries,
+        scorer=scorer,
+    )
+    # Aggregate: 50/51 → Δ ≈ -0.0196, within ε=0.05.
+    assert decision.accepted is True, "Slice below min_size cannot trigger rejection"
+
+
+def test_slice_epsilon_accepts_when_no_slice_collapses():
+    """If all slices stay within slice_epsilon, the gate accepts normally."""
+    gate = RegressionGate(GateConfig(epsilon=0.05, slice_epsilon=0.10))
+    # Candidate matches baseline exactly — no regression anywhere.
+    scorer = _silent_slice_scorer(hv_collapses=False)
+    decision = gate.evaluate(
+        tenant_id="t1",
+        candidate_id="candidate",
+        baseline_id="baseline",
+        holdout=_silent_slice_holdout(),
+        scorer=scorer,
+    )
+    assert decision.accepted is True
+    assert decision.delta == pytest.approx(0.0, abs=1e-6)
+
+
+def test_slice_epsilon_still_rejects_aggregate_when_both_violated():
+    """When both aggregate AND a slice exceed their thresholds, the reason must
+    accurately describe both — NOT lie about aggregate being within ε."""
+    # Heavy collapse: 30 high_value queries all drop to 0, only 20 routine survive.
+    # Aggregate: 20/50 → 0.40 → Δ=-0.60, well above ε=0.05.
+    # Slice 'intent=high_value': 30 queries collapse to 0 → Δ=-1.0, above slice_ε=0.10.
+    gate = RegressionGate(GateConfig(epsilon=0.05, slice_epsilon=0.10))
+    holdout = _silent_slice_holdout(n_silent=30, n_rest=20)
+    scorer = _silent_slice_scorer()
+    decision = gate.evaluate(
+        tenant_id="t1",
+        candidate_id="candidate",
+        baseline_id="baseline",
+        holdout=holdout,
+        scorer=scorer,
+    )
+    assert decision.accepted is False
+    # The reason must NOT claim aggregate is within ε — it is not.
+    assert "within ε" not in decision.reason, (
+        f"Reason must not say aggregate is within ε when it isn't. Got: {decision.reason!r}"
+    )
+    # The reason should call out BOTH the aggregate and the slice violation.
+    assert "aggregate" in decision.reason.lower()
+    assert "slice" in decision.reason.lower()
+    assert "exceeds ε" in decision.reason
+    assert "intent=high_value" in decision.reason
+
+
+def test_slice_epsilon_silent_case_reason_is_accurate():
+    """The silent-regression case (aggregate within ε, slice collapsed) reason
+    must say exactly that."""
+    gate = RegressionGate(GateConfig(epsilon=0.20, slice_epsilon=0.10))
+    decision = gate.evaluate(
+        tenant_id="t1",
+        candidate_id="candidate",
+        baseline_id="baseline",
+        holdout=_silent_slice_holdout(n_silent=10, n_rest=50),
+        scorer=_silent_slice_scorer(),
+    )
+    assert decision.accepted is False
+    # Aggregate is within ε here, so the silent-regression language is correct.
+    assert "within ε" in decision.reason
+    assert "silent-regression case" in decision.reason
